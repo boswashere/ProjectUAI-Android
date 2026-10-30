@@ -10,7 +10,7 @@
 -- from uai.show() without saying why.
 local token = ...
 local REPO = "https://raw.githubusercontent.com/boswashere/ProjectUAI-Android/main/"
-local FALLBACK_ENDPOINT = "https://rapids-kennedy-actively-emerald.trycloudflare.com"
+local FALLBACK_ENDPOINT = "https://accessed-growing-lap-breeding.trycloudflare.com"
 
 local function notify(text)
 	warn("[UAI] " .. text)
