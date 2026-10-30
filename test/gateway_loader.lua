@@ -31,7 +31,8 @@ local function run(options)
 		return true, record
 	end
 	client.providers.setActive = function(id) state.active = state.records[tonumber(id)] end
-	env.loadstring = function()
+	env.loadstring = function(source)
+		state.compiledSource = source
 		return function(context)
 			state.context = context
 			state.events[#state.events + 1] = 'start'
@@ -60,7 +61,8 @@ local function run(options)
 				end
 				return url:find('endpoint.txt', 1, true) and 'https://fixture.example' or '{}'
 			end
-			return string.rep(' ', 100001)
+			state.bundleUrl = url
+			return 'local FOLDER = "UAI"\n' .. string.rep(' ', 100001)
 		end,
 	}
 	local loader = assert(loadfile('examples/gateway.lua', 't', env))
@@ -101,5 +103,12 @@ test('saved gateway token also configures the working GLM route', function()
 	assert(state.active and state.active.model == 'zai-org/GLM-5.3-Flash',
 		'saved-token rerun left only the failing VibeCode route configured')
 	assert(state.active.apiKey == 'saved-fixture-token', 'GLM did not reuse the saved gateway token')
+end)
+test('rollback uses immutable 3.7.1 without writing into the newer vault folder', function()
+	local state = run({})
+	assert(state.bundleUrl:find('/d5060d3c4868cf6676ac191a1aa7708b78fa6b6d/dist/uai.lua', 1, true),
+		'loader still downloads changing upstream main instead of the rollback')
+	assert(state.compiledSource:find('local FOLDER = "UAI-Compat-3.7.1"', 1, true),
+		'older client would read or overwrite the newer vault storage')
 end)
 os.exit(failed == 0 and 0 or 1)

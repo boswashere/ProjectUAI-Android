@@ -55,6 +55,15 @@ automatically once `TOKEN` is filled in.
 
 ## Load it in UAI
 
+The compatibility loader pins client **3.7.1** at upstream commit
+`d5060d3c4868cf6676ac191a1aa7708b78fa6b6d` instead of tracking `main`.
+It changes only the client's storage folder to `UAI-Compat-3.7.1`, preserving
+the newer `UAI` settings and encrypted vault without reading or migrating them.
+This older client stores settings without the newer vault encryption. Only
+the scoped gateway token belongs in it, not upstream provider keys. Configure
+the compatibility folder once using the private launcher below. Rejoin the game
+before the rollback so an already-running newer client cannot block replacement.
+
 Run once, replacing the placeholder with your private gateway access token:
 
 ```lua

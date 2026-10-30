@@ -10,6 +10,8 @@
 -- from uai.show() without saying why.
 local token = ...
 local REPO = "https://raw.githubusercontent.com/boswashere/ProjectUAI-Android/main/"
+-- Explicit rollback: never silently replace the working UI with upstream main.
+local CLIENT_URL = "https://raw.githubusercontent.com/Project-Ptolemy/ProjectUAI/d5060d3c4868cf6676ac191a1aa7708b78fa6b6d/dist/uai.lua"
 local FALLBACK_ENDPOINT = "https://accessed-growing-lap-breeding.trycloudflare.com"
 
 local function notify(text)
@@ -83,10 +85,18 @@ local function decode(text)
 end
 
 status("downloading UAI")
-local source = httpGet("https://raw.githubusercontent.com/Project-Ptolemy/ProjectUAI/main/dist/uai.lua")
+local source = httpGet(CLIENT_URL)
 if not source or #source < 100000 then
 	status("download failed (" .. tostring(source and #source or "nil") .. " bytes)")
 	return
+end
+-- 3.7.1 predates credential vaults. Keep its settings entirely separate: never
+-- feed a newer encrypted config to an older client or overwrite the vault.
+local replacements
+source, replacements = source:gsub('local FOLDER = "UAI"', 'local FOLDER = "UAI-Compat-3.7.1"', 1)
+if replacements ~= 1 then
+	status("rollback storage isolation failed; original settings untouched")
+	error("[UAI] Unexpected rollback bundle; refusing to use original storage", 0)
 end
 status(string.format("downloaded %.1f MB, compiling", #source / 1048576))
 
