@@ -6,7 +6,7 @@
 -- pools are live so a pool without a credential on the host simply does not appear.
 local token = ...
 local REPO = "https://raw.githubusercontent.com/boswashere/ProjectUAI-Android/main/"
-local FALLBACK_ENDPOINT = "https://accommodation-fought-deeper-removing.trycloudflare.com"
+local FALLBACK_ENDPOINT = "https://rapids-kennedy-actively-emerald.trycloudflare.com"
 
 local function httpGet(url)
 	local ok, body = pcall(function() return game:HttpGet(url) end)

@@ -38,7 +38,9 @@ ACCESS_LOG = LOG_DIR / 'uai-gateway-access.jsonl'
 SLOTS = BoundedSemaphore(4)
 MAX_BODY = 2 * 1024 * 1024
 MAX_REPLY = 16 * 1024 * 1024
-UPSTREAM_TIMEOUT = 95
+UPSTREAM_TIMEOUT = 80
+# Total wall clock allowed per request. Cloudflare ends a request near 100s.
+TOTAL_BUDGET = 88
 CLIENT_TIMEOUT = 180
 
 # prefix, host, port, tls, key file, upstream path prefix, needs a key
@@ -194,16 +196,24 @@ class Handler(BaseHTTPRequestHandler):
                 headers['Authorization'] = 'Bearer ' + key
 
             # The host network drops TLS mid-handshake often enough that a single
-            # attempt turns into a user-visible failure. Retry a 5xx or a broken
-            # connection once; a completion has no side effect, so replay is safe.
+            # attempt turns into a user-visible failure, so a broken connection is
+            # retried once. The whole exchange shares one budget: Cloudflare ends a
+            # request at roughly 100 seconds and answers with its own HTML page, so
+            # a second attempt only starts if there is real room for it.
             status = 0
             data = b''
+            deadline = time.monotonic() + TOTAL_BUDGET
             for attempt in (1, 2):
+                remaining = deadline - time.monotonic()
+                if remaining < 5:
+                    break
                 if tls:
                     upstream = http.client.HTTPSConnection(
-                        host, port, timeout=UPSTREAM_TIMEOUT, context=ssl.create_default_context())
+                        host, port, timeout=min(UPSTREAM_TIMEOUT, remaining),
+                        context=ssl.create_default_context())
                 else:
-                    upstream = http.client.HTTPConnection(host, port, timeout=UPSTREAM_TIMEOUT)
+                    upstream = http.client.HTTPConnection(
+                        host, port, timeout=min(UPSTREAM_TIMEOUT, remaining))
                 try:
                     upstream.request(self.command, upstream_path, body, headers)
                     response = upstream.getresponse()
@@ -214,9 +224,9 @@ class Handler(BaseHTTPRequestHandler):
                     upstream = None
                 if status < 500 and data:
                     break
-                if attempt == 1:
-                    entry['retried'] = True
-                    time.sleep(0.6)
+                if deadline - time.monotonic() < 15:
+                    break
+                entry['retried'] = True
 
             entry['status'] = status
             if len(data) > MAX_REPLY:
