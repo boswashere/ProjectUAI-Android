@@ -1,21 +1,57 @@
-"""Authenticated inference-only gateway for the local VibeCode pool."""
+"""Authenticated multi-provider inference gateway for the local model pools.
+
+One bearer token fronts every upstream, so an Android Roblox client needs a
+single URL and one secret. Only model listing and chat completions are exposed;
+provider keys stay on this host.
+
+Routes:
+
+  /v1/models, /v1/chat/completions            local VibeCode pool (127.0.0.1:8787)
+  /gonka/v1/models, /gonka/v1/chat/completions  GonkaRouter (GLM, DeepSeek, MiniMax)
+
+Replies are non-streaming because Cloudflare Quick Tunnels do not carry SSE.
+"""
 import hmac
 import http.client
 import json
+import ssl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import BoundedSemaphore
 
 TOKEN_FILE = Path('/root/.secrets/uai-gateway-token')
+GONKA_KEY_FILE = Path('/root/.secrets/gonkarouter-key')
 SLOTS = BoundedSemaphore(4)
+MAX_BODY = 2 * 1024 * 1024
+MAX_REPLY = 16 * 1024 * 1024
+UPSTREAM_TIMEOUT = 95
+
+# prefix, host, port, tls, key file, upstream path prefix
+ROUTES = (
+    ('/v1/', '127.0.0.1', 8787, False, None, '/v1/'),
+    ('/gonka/v1/', 'api.gonkarouter.io', 443, True, GONKA_KEY_FILE, '/v1/'),
+)
 
 
-def allowed(method, path, authorization, token):
-    return bool(token) and hmac.compare_digest(authorization.encode(), ('Bearer ' + token).encode()) and (method, path) in {
-        ('GET', '/v1/models'), ('POST', '/v1/chat/completions')}
+def route_for(path):
+    for prefix, host, port, tls, key_file, upstream_prefix in ROUTES:
+        if path.startswith(prefix):
+            return prefix, host, port, tls, key_file, upstream_prefix + path[len(prefix):]
+    return None
+
+
+def allowed(method, path):
+    route = route_for(path)
+    if not route:
+        return False
+    rest = route[5]
+    return (method == 'GET' and rest.endswith('/models')) or (
+        method == 'POST' and rest.endswith('/chat/completions'))
 
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
     def log_message(self, *args):
         pass
 
@@ -34,8 +70,14 @@ class Handler(BaseHTTPRequestHandler):
         self.forward()
 
     def forward(self):
-        if not allowed(self.command, self.path, self.headers.get('Authorization', ''), self.server.token):
+        authorization = self.headers.get('Authorization', '')
+        if not self.server.token or not hmac.compare_digest(
+                authorization.encode(), ('Bearer ' + self.server.token).encode()):
             self.reply(403, b'{"error":"Access denied"}')
+            return
+        route = route_for(self.path)
+        if not route or not allowed(self.command, self.path):
+            self.reply(404, b'{"error":"Unknown route"}')
             return
         if not SLOTS.acquire(blocking=False):
             self.reply(429, b'{"error":"Gateway busy"}')
@@ -44,7 +86,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.connection.settimeout(30)
             length = int(self.headers.get('Content-Length', '0'))
-            if self.headers.get('Transfer-Encoding') or not 0 <= length <= 2 * 1024 * 1024:
+            if self.headers.get('Transfer-Encoding') or not 0 <= length <= MAX_BODY:
                 self.reply(413, b'{"error":"Invalid request size"}')
                 return
             body = None
@@ -55,20 +97,35 @@ class Handler(BaseHTTPRequestHandler):
                 payload['stream'] = False
                 payload.pop('stream_options', None)
                 body = json.dumps(payload).encode()
-            upstream = http.client.HTTPConnection('127.0.0.1', 8787, timeout=110)
-            upstream.request(self.command, self.path, body, {'Content-Type': 'application/json'})
+
+            _, host, port, tls, key_file, upstream_path = route
+            headers = {'Content-Type': 'application/json'}
+            if key_file:
+                key = key_file.read_text().strip()
+                if not key:
+                    self.reply(503, b'{"error":"Upstream credential missing"}')
+                    return
+                headers['Authorization'] = 'Bearer ' + key
+
+            if tls:
+                upstream = http.client.HTTPSConnection(host, port, timeout=UPSTREAM_TIMEOUT,
+                                                       context=ssl.create_default_context())
+            else:
+                upstream = http.client.HTTPConnection(host, port, timeout=UPSTREAM_TIMEOUT)
+            upstream.request(self.command, upstream_path, body, headers)
             response = upstream.getresponse()
-            data = response.read(16 * 1024 * 1024 + 1)
-            if len(data) > 16 * 1024 * 1024:
+            data = response.read(MAX_REPLY + 1)
+            if len(data) > MAX_REPLY:
                 self.reply(502, b'{"error":"Response too large"}')
             elif response.status >= 400:
-                self.reply(response.status, b'{"error":"Provider request failed"}')
+                self.reply(response.status, b'{"error":"Provider request failed","status":'
+                           + str(response.status).encode() + b'}')
             else:
                 self.reply(response.status, data)
         except (ValueError, UnicodeError):
             self.reply(400, b'{"error":"Invalid JSON request"}')
         except (OSError, http.client.HTTPException):
-            self.reply(502, b'{"error":"Upstream connection failed; request was not replayed"}')
+            self.reply(504, b'{"error":"Upstream connection failed or timed out; request was not replayed"}')
         finally:
             if upstream:
                 upstream.close()
