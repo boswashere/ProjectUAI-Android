@@ -76,6 +76,25 @@ gateway token as private: it authorizes spending from the host's pools.
 On this host the token is `/root/.secrets/uai-gateway-token` and a complete
 private launcher is `/root/.secrets/uai-gateway-launcher.lua`.
 
+The loader tries `game:HttpGet` and then the executor's `request`, `http_request`,
+`syn.request`, `http.request` or `fluxus.request` API. A failed download, compile
+or client startup raises an executor error as well as leaving its diagnostic
+on screen when GUI creation is available. It does not silently return an empty
+result. Tunnel discovery starts only after the client interface is opened.
+
+## Native bootstrap tests
+
+With a checkout containing the pinned 3.7.1 bundle and a native Luau executable:
+
+```sh
+node test/native_gateway_loader.cjs /path/to/ProjectUAI /path/to/luau
+```
+
+These tests compile and run the real loader and pinned client. They cover mobile
+startup, PlayerGui fallback, executor HTTP aliases, explicit startup failures and
+the send-button-to-reply path. Roblox services and HTTP responses are test
+fixtures; this is not a substitute for checking rendering in a Roblox executor.
+
 ## Provider notes
 
 - **VibeCode pool.** Its upstream host (`ru.vibecode-claude.online`) drops TLS

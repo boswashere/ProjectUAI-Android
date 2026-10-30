@@ -69,11 +69,41 @@ local function clearStatus()
 	statusGui, statusLabel = nil, nil
 end
 
+local function fail(text)
+	status(text)
+	error("[UAI] " .. text, 0)
+end
+
 local function httpGet(url)
 	local ok, body = pcall(function() return game:HttpGet(url, true) end)
 	if not ok then ok, body = pcall(function() return game:HttpGet(url) end) end
 	if ok and type(body) == "string" and body ~= "" then return body end
-	return nil
+
+	-- Some executors expose HTTP through request() but not game:HttpGet().
+	-- The client already supports these aliases; its bootstrap must too.
+	local candidates, seen = {}, {}
+	local function add(fn)
+		if type(fn) == "function" and not seen[fn] then
+			seen[fn] = true
+			candidates[#candidates + 1] = fn
+		end
+	end
+	add(request)
+	add(http_request)
+	add(type(syn) == "table" and syn.request)
+	add(type(http) == "table" and http.request)
+	add(type(fluxus) == "table" and fluxus.request)
+	for _, send in ipairs(candidates) do
+		local sent, response = pcall(send, { Url = url, Method = "GET", Timeout = 30 })
+		if sent and type(response) == "table" then
+			local code = tonumber(response.StatusCode or response.Status or response.status_code) or 0
+			local content = response.Body or response.body
+			if code >= 200 and code < 300 and type(content) == "string" and content ~= "" then
+				return content
+			end
+		end
+	end
+	return nil, "no HTTP transport returned a successful response"
 end
 
 local function decode(text)
@@ -85,10 +115,10 @@ local function decode(text)
 end
 
 status("downloading UAI")
-local source = httpGet(CLIENT_URL)
+local source, downloadError = httpGet(CLIENT_URL)
 if not source or #source < 100000 then
-	status("download failed (" .. tostring(source and #source or "nil") .. " bytes)")
-	return
+	fail("download failed (" .. tostring(source and #source or 0) .. " bytes): "
+		.. tostring(downloadError or "response was not a client bundle"))
 end
 -- 3.7.1 predates credential vaults. Keep its settings entirely separate: never
 -- feed a newer encrypted config to an older client or overwrite the vault.
@@ -100,21 +130,18 @@ if replacements ~= 1 then
 end
 status(string.format("downloaded %.1f MB, compiling", #source / 1048576))
 
-local chunk, compileError = loadstring(source)
-if not chunk then
-	status("compile failed: " .. tostring(compileError))
-	return
+local compiled, chunk, compileError = pcall(loadstring, source)
+if not compiled or type(chunk) ~= "function" then
+	fail("compile failed: " .. tostring(compiled and compileError or chunk))
 end
 
 status("starting UAI")
 local ok, uai = pcall(chunk, { ui = true, reuse = true })
 if not ok then
-	status("start failed: " .. tostring(uai))
-	return
+	fail("start failed: " .. tostring(uai))
 end
 if type(uai) ~= "table" or not uai.alive then
-	status("start returned no client: " .. tostring(uai))
-	return
+	fail("start returned no client: " .. tostring(uai))
 end
 
 -- Opening the UI must not depend on a tunnel or model discovery request.
