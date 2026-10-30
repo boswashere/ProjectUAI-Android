@@ -197,6 +197,18 @@ if [ "$(current_url || true)" != "$URL" ]; then
 	echo "published $ENDPOINT_FILE"
 fi
 
+# Keep the loader's hardcoded fallback in step, so a run that cannot reach
+# endpoint.txt still points somewhere real.
+python3 - "$ROOT/examples/gateway.lua" "$URL" <<'PY'
+import re, sys
+path, url = sys.argv[1], sys.argv[2]
+text = open(path, encoding='utf-8').read()
+new = re.sub(r'local FALLBACK_ENDPOINT = "[^"]*"',
+             'local FALLBACK_ENDPOINT = "%s"' % url, text, count=1)
+if new != text:
+    open(path, 'w', encoding='utf-8').write(new)
+PY
+
 if [ -f "$PAT_FILE" ] && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
 	git -C "$ROOT" add endpoint.txt examples/gateway.lua gateway.py \
 		examples/GATEWAY_SETUP.md start-gateway.sh cf-tunnel.conf.example 2>/dev/null || true
