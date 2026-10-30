@@ -55,6 +55,17 @@
 - [x] Add a test pinning endpoint-only publication and no generated-script mutation.
 - [x] Remove generated-loader rewriting and limit automated commits to `endpoint.txt`.
 - [x] Review changes, then run native, Lua, Python, Node tests and shell syntax/diff checks.
-- [ ] Commit/push reviewed files and verify the immutable public artifact matches the tested build.
-- [ ] Resume the watcher and verify public routes, denied unauthenticated inference, and real VibeCode/GLM completions.
-- [ ] Report separately which checks passed and that physical executor rendering remains unverified.
+- [x] Commit/push reviewed files and verify the immutable public artifact matches the tested build.
+- [x] Resume the watcher and verify public routes, denied unauthenticated inference, and real VibeCode/GLM completions.
+- [x] Report separately which checks passed and that physical executor rendering remains unverified.
+
+## Verification record
+
+- Published code through `ae6303b`; immutable and `main` artifacts match the tested
+  3,812,475-byte build, SHA-256 `4039bcf4e0fffead7cfc8929fa8f43729bafc481b51c7ad981d136f8ff036012`.
+- Native actual-client integration: 14/14; Lua bootstrap: 10/10; builder: 3/3;
+  Python gateway/publisher/recovery: 5/5; Android setup and shell syntax pass.
+- Public routes: HTTP 200; unauthenticated inference discovery: HTTP 403;
+  real VibeCode and GLM chat completions: HTTP 200. Existing watcher resumed.
+- Review was single-agent self-review. Native tests use mocked Roblox/HTTP
+  boundaries and do not establish rendering inside a physical Roblox executor.
