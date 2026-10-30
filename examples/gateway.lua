@@ -4,12 +4,71 @@
 -- the live tunnel address from endpoint.txt on this repository, so a rotated
 -- Cloudflare hostname never needs this file rewritten, and asks the gateway which
 -- pools are live so a pool without a credential on the host simply does not appear.
+--
+-- Every stage reports on screen. A loader that dies silently is indistinguishable
+-- from one that was never executed, and the previous version could return false
+-- from uai.show() without saying why.
 local token = ...
 local REPO = "https://raw.githubusercontent.com/boswashere/ProjectUAI-Android/main/"
 local FALLBACK_ENDPOINT = "https://rapids-kennedy-actively-emerald.trycloudflare.com"
 
+local function notify(text)
+	warn("[UAI] " .. text)
+end
+
+-- A tiny status label, independent of UAI, so the user can see how far the loader
+-- got. Removed once the interface is up.
+local statusGui, statusLabel
+local function status(text)
+	notify(text)
+	pcall(function()
+		if not statusGui then
+			local parent = game:GetService("CoreGui")
+			local ok, gui = pcall(function()
+				local g = Instance.new("ScreenGui")
+				g.Name = "UAILoaderStatus"
+				g.ResetOnSpawn = false
+				g.IgnoreGuiInset = true
+				g.DisplayOrder = 2147483647
+				g.Parent = parent
+				return g
+			end)
+			if not ok or not gui then
+				local player = game:GetService("Players").LocalPlayer
+				gui = Instance.new("ScreenGui")
+				gui.Name = "UAILoaderStatus"
+				gui.ResetOnSpawn = false
+				gui.Parent = player:WaitForChild("PlayerGui")
+			end
+			statusGui = gui
+			local label = Instance.new("TextLabel")
+			label.Name = "Status"
+			label.Size = UDim2.new(1, 0, 0, 24)
+			label.Position = UDim2.new(0, 0, 0, 8)
+			label.BackgroundTransparency = 1
+			label.Font = Enum.Font.Code
+			label.TextSize = 14
+			label.TextColor3 = Color3.fromRGB(255, 214, 102)
+			label.TextStrokeTransparency = 0.4
+			label.TextXAlignment = Enum.TextXAlignment.Left
+			label.Text = ""
+			label.Parent = gui
+			statusLabel = label
+		end
+		if statusLabel then statusLabel.Text = "UAI loader: " .. text end
+	end)
+end
+
+local function clearStatus()
+	pcall(function()
+		if statusGui then statusGui:Destroy() end
+	end)
+	statusGui, statusLabel = nil, nil
+end
+
 local function httpGet(url)
-	local ok, body = pcall(function() return game:HttpGet(url) end)
+	local ok, body = pcall(function() return game:HttpGet(url, true) end)
+	if not ok then ok, body = pcall(function() return game:HttpGet(url) end) end
 	if ok and type(body) == "string" and body ~= "" then return body end
 	return nil
 end
@@ -22,18 +81,40 @@ local function decode(text)
 	return nil
 end
 
--- endpoint.txt is one line: the current public base URL.
+status("reading endpoint")
 local endpoint = FALLBACK_ENDPOINT
 do
 	local body = httpGet(REPO .. "endpoint.txt")
 	local found = type(body) == "string" and body:match("https://[%w%.%-]+") or nil
 	if found then endpoint = found end
+	status("endpoint " .. endpoint)
 end
 
-local start = assert(loadstring(game:HttpGet(
-	"https://raw.githubusercontent.com/Project-Ptolemy/ProjectUAI/main/dist/uai.lua")))
-local uai = start({ reuse = true })
-assert(uai and uai.alive, "UAI could not start")
+status("downloading UAI")
+local source = httpGet("https://raw.githubusercontent.com/Project-Ptolemy/ProjectUAI/main/dist/uai.lua")
+if not source or #source < 100000 then
+	status("download failed (" .. tostring(source and #source or "nil") .. " bytes)")
+	return
+end
+status(string.format("downloaded %.1f MB, compiling", #source / 1048576))
+
+local chunk, compileError = loadstring(source)
+if not chunk then
+	status("compile failed: " .. tostring(compileError))
+	return
+end
+
+status("starting UAI")
+local ok, uai = pcall(chunk)
+if not ok then
+	status("start failed: " .. tostring(uai))
+	return
+end
+if type(uai) ~= "table" or not uai.alive then
+	status("start returned no client: " .. tostring(uai))
+	return
+end
+status("UAI up, configuring providers")
 
 local catalog = {
 	["/v1"] = {
@@ -69,7 +150,6 @@ local catalog = {
 	},
 }
 
--- Only build providers the host can actually serve right now.
 local routes = { "/v1" }
 do
 	local body = httpGet(endpoint .. "/routes")
@@ -77,6 +157,7 @@ do
 	if decoded and type(decoded.routes) == "table" and #decoded.routes > 0 then
 		routes = decoded.routes
 	end
+	status("routes: " .. table.concat(routes, " "))
 end
 
 local function configure(route)
@@ -89,47 +170,61 @@ local function configure(route)
 	end
 	if not record then record = uai.providers.blank("custom") end
 	if type(token) == "string" and token ~= "" then record.apiKey = token end
-	if not record.apiKey or record.apiKey == "" then return nil end
+	if not record.apiKey or record.apiKey == "" then
+		notify("no token saved for " .. entry.label)
+		return nil
+	end
 	record.label = entry.label
 	record.baseUrl = baseUrl
 	record.api = "openai"
 	record.authStyle = "bearer"
-	-- The gateway answers with a single JSON body, not SSE.
+	-- The gateway answers with one JSON body, not SSE.
 	record.stream = false
 	if type(record.model) ~= "string" or record.model == "" then record.model = entry.default end
 	record.models = entry.models
 	local savedOk, saved = uai.providers.save(record)
 	if not savedOk then
-		warn("[UAI setup] Provider settings were rejected for " .. entry.label .. ". Open Providers to review them.")
+		notify("provider rejected for " .. entry.label .. ": " .. tostring(saved))
 		return nil
 	end
 	return saved
 end
 
-local active
--- Preference order, not discovery order: the VibeCode pool's upstream host
--- (ru.vibecode-claude.online) drops TLS handshakes from this network for minutes
--- at a time, so a route that answers reliably is activated first. The others stay
--- saved and enabled, and UAI's provider fallback still tries them.
-local preference = { "/gonka/v1", "/v1", "/zen/v1" }
-for _, wanted in ipairs(preference) do
-	for _, route in ipairs(routes) do
-		if route == wanted then
-			local saved = configure(route)
-			if saved and not active then active = saved end
-		end
-	end
-end
+local built = {}
 for _, route in ipairs(routes) do
-	if not active then active = configure(route) end
+	local saved = configure(route)
+	if saved then built[#built + 1] = saved end
 end
 
-if not active then
+if #built == 0 then
+	status("no provider saved; opening setup")
 	uai.show("providers")
-	warn("Pass your private gateway token to this loader once.")
+	clearStatus()
 	return uai
 end
 
+-- Prefer a pool that answers. The VibeCode upstream fails TLS from this host, so
+-- GLM is the default until that recovers.
+local preference = { "/gonka/v1", "/v1", "/zen/v1" }
+local active = built[1]
+for _, route in ipairs(preference) do
+	for _, saved in ipairs(built) do
+		if saved.baseUrl == endpoint .. route then active = saved end
+	end
+end
 uai.providers.setActive(active.id)
-uai.show("chat")
+
+status("opening interface")
+local shown, why = uai.show("chat")
+if not shown then
+	status("show failed: " .. tostring(why))
+	local toggled, toggleWhy = uai.toggle()
+	if not toggled then
+		status("toggle failed: " .. tostring(toggleWhy))
+		return uai
+	end
+end
+
+status("ready: " .. tostring(active.label) .. " / " .. tostring(active.model))
+task.delay(4, clearStatus)
 return uai
