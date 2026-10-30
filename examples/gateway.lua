@@ -73667,7 +73667,6 @@ local function gatewayBootstrap(...)
 -- Included directly beside the client by tools/build-gateway.cjs.
 local startClient, token = ...
 local REPO = "https://raw.githubusercontent.com/boswashere/ProjectUAI-Android/main/"
-local FALLBACK_ENDPOINT = "https://serving-honor-spatial-fishing.trycloudflare.com"
 
 local statusGui, statusLabel
 local function status(text)
@@ -73703,9 +73702,12 @@ local function fail(text)
 	error("[UAI] " .. text, 0)
 end
 
-local function httpGet(url)
+local function httpGet(url, current)
+	if not current() then return nil end
 	local ok, body = pcall(function() return game:HttpGet(url, true) end)
+	if not current() then return nil end
 	if not ok then ok, body = pcall(function() return game:HttpGet(url) end) end
+	if not current() then return nil end
 	if ok and type(body) == "string" and body ~= "" then return body end
 	local candidates, seen = {}, {}
 	local function add(fn)
@@ -73719,7 +73721,9 @@ local function httpGet(url)
 	add(type(http) == "table" and http.request)
 	add(type(fluxus) == "table" and fluxus.request)
 	for _, send in ipairs(candidates) do
+		if not current() then return nil end
 		local sent, response = pcall(send, { Url = url, Method = "GET", Timeout = 10 })
+		if not current() then return nil end
 		if sent and type(response) == "table" then
 			local code = tonumber(response.StatusCode or response.Status or response.status_code) or 0
 			local content = response.Body or response.body
@@ -73740,6 +73744,24 @@ if not ok then fail("start failed: " .. tostring(uai)) end
 if type(uai) ~= "table" or not uai.alive then fail("start returned no client") end
 local shown, why = uai.show("chat")
 if not shown then fail("Cannot open interface: " .. tostring(why)) end
+
+-- A rerun owns a new setup job, not a second client or a stale HTTP callback.
+local previous = uai._workspaceGatewaySetup
+if previous then
+	previous.finished = true
+	if previous.clear then pcall(previous.clear) end
+end
+local setup = { finished = false, deadline = os.clock() + 12, clear = clearStatus }
+uai._workspaceGatewaySetup = setup
+local function current()
+	return uai.alive and uai._workspaceGatewaySetup == setup and not setup.finished and os.clock() < setup.deadline
+end
+local function finish(text)
+	if not current() then return end
+	setup.finished = true
+	status(text)
+	task.delay(5, clearStatus)
+end
 
 local catalog = {
 	["/v1"] = {
@@ -73774,41 +73796,81 @@ if type(token) ~= "string" or token == "" then
 	end
 end
 
-status("interface open; finding gateway")
-local endpoint = FALLBACK_ENDPOINT
-local body = httpGet(REPO .. "endpoint.txt")
-if type(body) == "string" then endpoint = body:match("https://[%w%.%-]+") or endpoint end
-local routes = { "/v1" }
-local discovered = httpGet(endpoint .. "/routes")
-local decoded = discovered and decode(discovered)
-if decoded and type(decoded.routes) == "table" then routes = decoded.routes end
+if type(token) ~= "string" or token == "" then
+	local opened, reason = uai.show("providers")
+	if not opened then fail("Cannot open provider setup: " .. tostring(reason)) end
+	finish("Interface open; add your private gateway token in Providers, then rerun")
+	return uai
+end
 
-local built = {}
-for _, route in ipairs(routes) do
-	local entry = catalog[route]
-	if entry and type(token) == "string" and token ~= "" then
-		local record
-		for _, saved in ipairs(uai.providers.list()) do
-			if saved.label == entry.label or saved.baseUrl == endpoint .. route then record = saved; break end
-		end
-		record = record or uai.providers.blank("custom")
-		record.label, record.baseUrl, record.apiKey = entry.label, endpoint .. route, token
-		record.api, record.authStyle, record.stream = "openai", "bearer", false
-		if type(record.model) ~= "string" or record.model == "" then record.model = entry.default end
-		record.models = entry.models
-		local savedOk, saved = uai.providers.save(record)
-		if savedOk then built[route] = saved end
+local function origin(body)
+	if type(body) ~= "string" or #body > 512 then return nil end
+	local host = body:match("^%s*https://([A-Za-z0-9%.%-]+)/?%s*$")
+	if not host or #host > 253 or not host:find(".", 1, true) or host:find("..", 1, true)
+		or host:sub(1, 1) == "." or host:sub(-1) == "." then return nil end
+	for label in host:gmatch("[^%.]+") do
+		if #label > 63 or label:sub(1, 1) == "-" or label:sub(-1) == "-" then return nil end
 	end
+	return "https://" .. host:lower()
 end
-local active = built["/gonka/v1"] or built["/v1"] or built["/zen/v1"]
-if active then
-	uai.providers.setActive(active.id)
-	status("ready: " .. active.label)
-	task.delay(4, clearStatus)
-else
-	uai.show("providers")
-	status("interface open; add your private gateway token in Providers")
-end
+
+local initial = uai.providers.active()
+local initialId, initialModel = initial and initial.id, initial and initial.model
+local selectDefault = not initial or initial.preset == "hcnsec"
+status("interface open; finding gateway in background")
+task.delay(12, function()
+	if uai.alive and uai._workspaceGatewaySetup == setup and not setup.finished then
+		setup.finished = true
+		status("Gateway lookup timed out; interface stays open and saved providers are unchanged")
+	end
+end)
+
+task.defer(function()
+	local worked = pcall(function()
+		local endpoint = origin(httpGet(REPO .. "endpoint.txt", current))
+		if not current() then return end
+		if not endpoint then finish("Gateway address unavailable; saved providers unchanged"); return end
+		local body = httpGet(endpoint .. "/routes", current)
+		if not current() then return end
+		local decoded = body and decode(body)
+		if not decoded or type(decoded.routes) ~= "table" then
+			finish("Gateway unavailable; saved providers unchanged")
+			return
+		end
+
+		local built = {}
+		for _, route in ipairs(decoded.routes) do
+			if not current() then return end
+			local entry = catalog[route]
+			if entry and not built[route] then
+				local record
+				for _, saved in ipairs(uai.providers.list()) do
+					if saved.label == entry.label or saved.baseUrl == endpoint .. route then
+						record = {}
+						for key, value in pairs(saved) do record[key] = value end
+						break
+					end
+				end
+				record = record or uai.providers.blank("custom")
+				record.label, record.baseUrl, record.apiKey = entry.label, endpoint .. route, token
+				record.api, record.authStyle, record.stream = "openai", "bearer", false
+				if type(record.model) ~= "string" or record.model == "" then record.model = entry.default end
+				record.models = entry.models
+				local savedOk, saved = uai.providers.save(record)
+				if not savedOk then finish("Gateway settings were rejected; review Providers"); return end
+				if saved.enabled ~= false then built[route] = saved end
+			end
+		end
+		if not current() then return end
+		local preferred = built["/gonka/v1"] or built["/v1"] or built["/zen/v1"]
+		local active = uai.providers.active()
+		-- Do not steal a selection made during HTTP, or replace a saved custom choice.
+		if preferred and selectDefault and (active and active.id) == initialId
+			and (active and active.model) == initialModel then uai.providers.setActive(preferred.id) end
+		finish(preferred and "Gateway configured; choose a model in the picker" or "No enabled gateway route; review Providers")
+	end)
+	if not worked then finish("Gateway setup failed; interface stays open. Review Providers") end
+end)
 return uai
 end
 

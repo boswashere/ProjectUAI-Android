@@ -13,6 +13,7 @@ local function run(options)
 	end
 	h.game.HttpGet = function(_, url)
 		if options.httpGetDenied or options.offline then error('HttpGet unavailable') end
+		if options.hanging then h.sandbox.task.wait(20) end
 		return body(url)
 	end
 	h.http.handler = function(entry)
@@ -57,7 +58,9 @@ local function run(options)
 		h.sandbox.loadstring = function() error('Secondary compilation forbidden') end
 	end
 	local ok, result
-	h.sched.spawn(function() ok, result = pcall(wrapper, 'fixture-only-gateway-token') end)
+	local invocationToken
+	if not options.noToken then invocationToken = 'fixture-only-gateway-token' end
+	h.sched.spawn(function() ok, result = pcall(wrapper, invocationToken) end)
 	h.settle(8)
 	if options.expectError then
 		assert(ok == false, 'bootstrap silently returned instead of reporting the failure')
@@ -69,8 +72,27 @@ local function run(options)
 		if options.playerGui then
 			assert(result.app.screen.Parent == h.localPlayer:FindFirstChild('PlayerGui'), 'PlayerGui fallback not used')
 		end
-		if not options.offline then
+		if not options.offline and not options.noToken and not options.hanging then
 			assert(result.providers.active().model == 'zai-org/GLM-5.3-Flash', 'working route not configured')
+		end
+		if options.hanging then
+			local count = #result.providers.list()
+			h.settle(20)
+			assert(#result.providers.list() == count, 'late HTTP result created providers after the deadline')
+		end
+		if options.rerun then
+			local count = #result.providers.list()
+			local selected
+			for _, record in ipairs(result.providers.list()) do
+				if record.label == 'Workspace Gateway' then selected = record end
+			end
+			result.providers.setActive(assert(selected).id)
+			local again
+			h.sched.spawn(function() again = wrapper() end)
+			h.settle(8)
+			assert(again == result and result.app.window.visible, 'reexecution replaced or hid the actual client')
+			assert(#result.providers.list() == count, 'reexecution duplicated providers')
+			assert(result.providers.active().id == selected.id, 'reexecution discarded the saved model selection')
 		end
 		if options.send then
 			local composer = assert(result.app.chatPanel.composer, 'composer not mounted')
@@ -104,6 +126,9 @@ local scenarios = {
 	{'embedded client needs no secondary compilation', {noDynamicCompile = true}},
 	{'client startup failure is not swallowed', {noGui = true, expectError = 'start returned no client'}},
 	{'offline bootstrap still returns the visible client', {offline = true}},
+	{'hanging discovery returns UI and rejects late setup results', {hanging = true}},
+	{'no token still opens the actual interface', {noToken = true}},
+	{'actual client reexecution preserves visibility providers and selection', {rerun = true}},
 }
 local failed = 0
 for _, scenario in ipairs(scenarios) do

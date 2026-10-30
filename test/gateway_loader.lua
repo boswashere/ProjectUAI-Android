@@ -1,7 +1,7 @@
 -- Execute the actual loader with Roblox/network boundaries replaced by fixtures.
 -- Regression: optional endpoint lookup must never gate opening the interface.
 local function run(options)
-	local state = { labels = {}, records = {}, events = {} }
+	local state = { labels = {}, records = {}, events = {}, saves = 0, requests = 0 }
 	if options.reuseSavedKey then
 		state.records[1] = { id = '1', label = 'Workspace Gateway', apiKey = 'saved-fixture-token', model = 'gpt-6-astra' }
 	end
@@ -16,8 +16,26 @@ local function run(options)
 		if class == 'TextLabel' then state.labels[#state.labels + 1] = object end
 		return object
 	end }
-	env.task = { delay = function() end }
+	local now, jobs, timers = 0, {}, {}
+	env.os = setmetatable({clock = function() return now end}, {__index = os})
+	env.task = {
+		defer = function(fn) jobs[#jobs + 1] = coroutine.create(fn) end,
+		delay = function(seconds, fn) timers[#timers + 1] = {at = now + seconds, fn = fn} end,
+	}
+	state.advance = function(seconds)
+		while #jobs > 0 do
+			local job = table.remove(jobs, 1)
+			local ok, err = coroutine.resume(job)
+			assert(ok, err)
+			if coroutine.status(job) ~= 'dead' then state.blockedWorker = job end
+		end
+		now = now + seconds
+		for _, timer in ipairs(timers) do
+			if not timer.fired and timer.at <= now then timer.fired = true; timer.fn() end
+		end
+	end
 	local client = { alive = true, providers = {} }
+	state.client = client
 	client.show = function(panel)
 		state.events[#state.events + 1] = 'show:' .. panel
 		state.visible = true
@@ -26,11 +44,18 @@ local function run(options)
 	client.providers.list = function() return state.records end
 	client.providers.blank = function() return { apiKey = '', model = '' } end
 	client.providers.save = function(record)
-		record.id = tostring(#state.records + 1)
+		state.saves = state.saves + 1
+		for index, saved in ipairs(state.records) do
+			if record.id == saved.id then state.records[index] = record; return true, record end
+		end
+		record.id = record.id or tostring(#state.records + 1)
 		state.records[#state.records + 1] = record
 		return true, record
 	end
-	client.providers.setActive = function(id) state.active = state.records[tonumber(id)] end
+	client.providers.active = function() return state.active or {id = 'default', preset = 'hcnsec', model = 'auto'} end
+	client.providers.setActive = function(id)
+		for _, saved in ipairs(state.records) do if saved.id == id then state.active = saved; return end end
+	end
 	local function startClient(context)
 		state.context = context
 		state.events[#state.events + 1] = 'start'
@@ -51,22 +76,25 @@ local function run(options)
 			end } end
 		end,
 		HttpGet = function(_, url)
+			state.requests = state.requests + 1
 			if url:find('endpoint.txt', 1, true) or url:find('/routes', 1, true) then
-				if options.blockDiscovery then
+				if options.blockDiscovery and not state.blocked then
 					state.blocked = true
 					coroutine.yield('discovery stalled')
 				end
-				return url:find('endpoint.txt', 1, true) and 'https://fixture.example' or '{}'
+				return url:find('endpoint.txt', 1, true) and (options.endpoint or 'https://fixture.example') or '{}'
 			end
 			error('Unexpected secondary download: ' .. url)
 		end,
 	}
 	local loader = assert(loadfile('src/gateway_bootstrap.lua', 't', env))
 	local invocationToken
-	if not options.reuseSavedKey then invocationToken = 'fixture-token' end
-	local worker = coroutine.create(function() loader(startClient, invocationToken) end)
+	if not options.reuseSavedKey and not options.noToken then invocationToken = 'fixture-token' end
+	local worker = coroutine.create(function() state.result = loader(startClient, invocationToken) end)
 	local ok, err = coroutine.resume(worker)
 	assert(ok, err)
+	state.returned = coroutine.status(worker) == 'dead'
+	state.advance(0)
 	return state
 end
 
@@ -99,5 +127,41 @@ test('saved gateway token also configures the working GLM route', function()
 	assert(state.active and state.active.model == 'zai-org/GLM-5.3-Flash',
 		'saved-token rerun left only the failing VibeCode route configured')
 	assert(state.active.apiKey == 'saved-fixture-token', 'GLM did not reuse the saved gateway token')
+end)
+test('returns a live handle while discovery is stalled', function()
+	local state = run({blockDiscovery = true})
+	assert(state.returned and state.result == state.client, 'discovery blocks the caller from receiving its client')
+end)
+test('late discovery cannot save credentials after the twelve-second deadline', function()
+	local state = run({blockDiscovery = true})
+	state.advance(13)
+	local ok, err = coroutine.resume(assert(state.blockedWorker))
+	assert(ok, err)
+	assert(state.saves == 0, 'expired discovery changed provider settings')
+end)
+test('missing token opens setup without any discovery request', function()
+	local state = run({noToken = true})
+	assert(state.returned and state.visible, 'missing token hid the interface')
+	assert(state.events[#state.events] == 'show:providers', 'provider setup was not opened')
+	assert(state.requests == 0 and state.saves == 0, 'missing credentials still triggered gateway setup')
+end)
+test('discovery accepts only a complete HTTPS origin', function()
+	for _, endpoint in ipairs({
+		'http://fixture.example', 'https://user@fixture.example', 'https://fixture.example/path',
+		'<html>https://fixture.example</html>', 'https://fixture.example#fragment', 'https://bad..example',
+	}) do
+		local state = run({endpoint = endpoint})
+		assert(state.saves == 0, 'invalid endpoint accepted: ' .. endpoint)
+	end
+end)
+test('background setup preserves a selection made during discovery', function()
+	local state = run({blockDiscovery = true})
+	local manual = {id = 'manual', label = 'My provider', model = 'selected-model'}
+	state.records[#state.records + 1] = manual
+	state.client.providers.setActive('manual')
+	local ok, err = coroutine.resume(assert(state.blockedWorker))
+	assert(ok, err)
+	assert(state.saves == 2, 'fixture did not finish background provider setup')
+	assert(state.client.providers.active() == manual, 'background setup overwrote the user selection')
 end)
 os.exit(failed == 0 and 0 or 1)

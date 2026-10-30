@@ -44,9 +44,9 @@
 
 **Interface:** Bootstrap returns the live UAI handle after opening the UI; a worker discovers the HTTPS origin/routes and configures providers, guarded by a 12-second deadline. Saved workspace credentials can be reused, but missing credentials open provider setup rather than preventing UI startup.
 
-- [ ] Add failing tests for hanging discovery, invalid origins, no token, actual-client reexecution, and late results after the setup deadline.
-- [ ] Implement background setup, safe saved-provider defaults, status/error reporting, and checks that expired workers cannot change provider configuration.
-- [ ] Verify mobile Send through the real adapter displays the boundary-fixture response.
+- [x] Add failing tests for hanging discovery, invalid origins, no token, actual-client reexecution, and late results after the setup deadline.
+- [x] Implement background setup, safe saved-provider defaults, status/error reporting, and checks that expired workers cannot change provider configuration.
+- [x] Verify mobile Send through the real adapter displays the boundary-fixture response.
 
 ### Task 3: Publish safely and verify live routing
 
