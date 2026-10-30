@@ -8,6 +8,34 @@ import unittest
 
 
 class TunnelRecoveryTests(unittest.TestCase):
+    def test_restart_escalates_only_the_original_stuck_connector(self):
+        source = Path('watch-gateway.sh').read_text()
+        function = re.search(r'^restart_tunnel\(\) \{\n.*?^\}', source, re.M | re.S).group()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            starter = root / 'start-gateway.sh'
+            starter.write_text('#!/bin/sh\ntouch "$ROOT/recovered"\n')
+            starter.chmod(0o700)
+            script = '''
+log() { :; }
+sleep() { touch "$ROOT/replacement-started"; }
+pgrep() {
+    printf '31001\\n'
+    [ ! -f "$ROOT/replacement-started" ] || printf '31002\\n'
+}
+kill() {
+    [ "$1" != '-0' ] || return 0
+    printf '%s\\n' "$*" >> "$ROOT/signals"
+}
+PORT=8792
+WATCH_LOG="$ROOT/watch.log"
+''' + function + '\nrestart_tunnel\n'
+            subprocess.run(['bash', '-c', script], env={**os.environ, 'ROOT': directory}, check=True)
+            signals = (root / 'signals').read_text().splitlines()
+            self.assertIn('-KILL 31001', signals, 'stuck graceful shutdown is never escalated')
+            self.assertNotIn('-KILL 31002', signals, 'recovery kills the replacement connector')
+            self.assertTrue((root / 'recovered').exists())
+
     def test_restart_targets_connector_not_supervisor_and_restores_stack(self):
         source = Path('watch-gateway.sh').read_text()
         function = re.search(r'^restart_tunnel\(\) \{\n.*?^\}', source, re.M | re.S).group()
@@ -19,7 +47,7 @@ class TunnelRecoveryTests(unittest.TestCase):
             script = '''
 log() { :; }
 sleep() { :; }
-pkill() { printf '%s\\n' "$2" > "$ROOT/pattern"; }
+pgrep() { printf '%s\\n' "$2" > "$ROOT/pattern"; }
 PORT=8792
 WATCH_LOG="$ROOT/watch.log"
 ''' + function + '\nrestart_tunnel\n'

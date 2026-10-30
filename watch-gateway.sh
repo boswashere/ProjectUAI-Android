@@ -95,8 +95,20 @@ restart_tunnel() {
 	log "restarting tunnel"
 	# Anchor the executable: the supervisor's bash -c argument also contains
 	# this command, and an unanchored match kills the recovery loop itself.
-	pkill -f "^/root/.local/bin/cloudflared tunnel --url http://127[.]0[.]0[.]1:$PORT( |$)" 2>/dev/null || true
+	local pattern="^/root/.local/bin/cloudflared tunnel --url http://127[.]0[.]0[.]1:$PORT( |$)"
+	local pids pid forced=false
+	pids="$(pgrep -f "$pattern" || true)"
+	for pid in $pids; do kill -TERM "$pid" 2>/dev/null || true; done
 	sleep 6
+	# cloudflared can hang after announcing graceful shutdown. Escalate only
+	# the captured connectors, never a new child started by the supervisor.
+	for pid in $pids; do
+		if kill -0 "$pid" 2>/dev/null && pgrep -f "$pattern" | grep -qx "$pid"; then
+			kill -KILL "$pid" 2>/dev/null || true
+			forced=true
+		fi
+	done
+	if [ "$forced" = true ]; then sleep 6; fi
 	# The supervisor may already have exited. A live gateway port alone is not
 	# evidence that anything is still serving the public hostname.
 	"$ROOT/start-gateway.sh" >>"$WATCH_LOG" 2>&1 || true
