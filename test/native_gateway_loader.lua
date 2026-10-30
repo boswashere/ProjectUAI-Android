@@ -4,7 +4,16 @@ local function run(options)
 	h.setViewport(412, 915)
 	h.services.UserInputService.TouchEnabled = true
 	h.services.UserInputService.KeyboardEnabled = false
-	local chatRequests = {}
+	local chatRequests, catalogRequests, catalogs = {}, {}, {}
+	local catalogInFlight, catalogPeak, editedCatalogRequests = 0, 0, 0
+	local catalogGeneration = 1
+	for _, route in ipairs({'/v1', '/gonka/v1', '/fcc/v1', '/rsiai/v1', '/hinoki/v1'}) do
+		local count = route == '/fcc/v1' and 62 or route == '/v1' and 32 or 1
+		catalogs[route] = {}
+		for index = 1, count do
+			catalogs[route][index] = {id = 'discovered' .. route:gsub('/', '-') .. '-' .. index}
+		end
+	end
 	local function body(url)
 		assert(not url:find('/dist/uai.lua', 1, true), 'secondary client download attempted')
 		if url:find('endpoint.txt', 1, true) then return 'https://fixture.example' end
@@ -23,6 +32,24 @@ local function run(options)
 	end
 	h.http.handler = function(entry)
 		if options.offline then error('Executor HTTP unavailable') end
+		if entry.url == 'https://edited.fixture.example/rsiai/v1/models' then
+			editedCatalogRequests += 1
+			return {StatusCode = 200, Body = '{"data":[{"id":"unrequested-new-connection-model"}]}',
+				Headers = {['content-type'] = 'application/json'}}
+		end
+		local modelRoute = entry.url:match('^https://fixture%.example(.-)/models$')
+		if modelRoute then
+			assert(entry.headers.Authorization == 'Bearer fixture-only-gateway-token', 'catalog lookup lost gateway auth')
+			catalogRequests[#catalogRequests + 1] = entry
+			local rows = options.supersedeCatalog and {{id = catalogGeneration == 1 and 'stale-generation-only' or 'current-generation-model'}} or catalogs[modelRoute]
+			local responseBody = h.json.encode({data = rows})
+			catalogInFlight += 1
+			catalogPeak = math.max(catalogPeak, catalogInFlight)
+			if options.catalogDelay then h.sandbox.task.wait(options.catalogDelay) end
+			catalogInFlight -= 1
+			return {StatusCode = options.catalogFailure and 503 or 200,
+				Body = responseBody, Headers = {['content-type'] = 'application/json'}}
+		end
 		if entry.url:find('/fcc/v1/chat/completions', 1, true) then
 			return {StatusCode = 404, Body = '{"detail":"Not Found"}', Headers = {['content-type'] = 'application/json'}}
 		end
@@ -110,7 +137,105 @@ local function run(options)
 			assert(#result.providers.list() == count, 'reexecution duplicated providers')
 			assert(result.providers.active().id == selected.id, 'reexecution discarded the saved model selection')
 		end
-		if options.extraProviders then
+		if options.catalogs then
+			local expected = options.extraProviders and 5 or 2
+			assert(#catalogRequests == expected, 'not every configured provider catalog was fetched automatically')
+			for _, record in ipairs(result.providers.list()) do
+				local route = record.baseUrl:match('^https://fixture%.example(.*)$')
+				if catalogs[route] then
+					local saved = {}
+					for _, id in ipairs(record.models) do saved[id] = true end
+					for _, model in ipairs(catalogs[route]) do assert(saved[model.id], 'full catalog not persisted: ' .. model.id) end
+				end
+			end
+			local fcc
+			for _, record in ipairs(result.providers.list()) do if record.baseUrl == 'https://fixture.example/fcc/v1' then fcc = record end end
+			if fcc then
+				result.providers.setActive(fcc.id)
+				result.env.require('ui/panels/modelpicker').open()
+				h.settle(1)
+				assert(result.app.screen:FindFirstChild('Model_' .. catalogs['/fcc/v1'][62].id, true), 'last upstream model is absent from the actual picker')
+			end
+			assert(catalogPeak <= 3, 'catalog refresh exhausted the four-slot gateway')
+		end
+		if options.lateCatalog then
+			assert(#catalogRequests > 0, 'no background catalog lookup was started')
+			local before = {}
+			for _, record in ipairs(result.providers.list()) do before[record.id] = table.concat(record.models, '|') end
+			h.settle(35)
+			for _, record in ipairs(result.providers.list()) do
+				assert(before[record.id] == table.concat(record.models, '|'), 'expired catalog refresh changed saved models')
+			end
+		end
+		if options.manualCatalog then
+			local fcc
+			for _, record in ipairs(result.providers.list()) do if record.label == 'Workspace Gateway · FCC' then fcc = record end end
+			assert(fcc, 'FCC not configured')
+			fcc.models[#fcc.models + 1] = 'manually-added-model'
+			fcc.model = 'manually-added-model'
+			assert(result.providers.save(fcc))
+			result.providers.setActive(fcc.id)
+			h.settle(20)
+			local latest = assert(result.providers.get(fcc.id))
+			local saved = {}
+			for _, id in ipairs(latest.models) do saved[id] = true end
+			assert(saved['manually-added-model'] and saved[catalogs['/fcc/v1'][62].id], 'refresh discarded manual IDs or the full upstream list')
+			assert(latest.model == 'manually-added-model' and result.providers.active().id == fcc.id, 'catalog refresh changed the selected model')
+			h.sched.spawn(function() wrapper() end)
+			h.settle(8)
+			local retained = false
+			for _, id in ipairs(result.providers.get(fcc.id).models) do retained = retained or id == 'manually-added-model' end
+			assert(retained, 'reexecution erased previously saved manual IDs')
+		end
+		if options.catalogScopeChanges then
+			assert(#catalogRequests > 0, 'no background catalog lookup was started')
+			local vibe, fcc
+			for _, record in ipairs(result.providers.list()) do
+				if record.label == 'Workspace Gateway' then vibe = record end
+				if record.label == 'Workspace Gateway · FCC' then fcc = record end
+			end
+			vibe.baseUrl, vibe.models = 'https://edited.fixture.example/v1', {'keep-edited-provider'}
+			assert(result.providers.save(vibe))
+			result.providers.remove(assert(fcc).id)
+			h.settle(20)
+			assert(result.providers.get(fcc.id) == nil, 'late catalog resurrected a deleted provider')
+			assert(table.concat(result.providers.get(vibe.id).models, '|') == 'keep-edited-provider', 'old catalog overwrote an edited connection')
+		end
+		if options.catalogFailure then
+			assert(#catalogRequests > 0, 'no background catalog lookup was started')
+			for _, record in ipairs(result.providers.list()) do
+				if record.label == 'Workspace Gateway' then
+					assert(#record.models >= 25, 'failed refresh erased the saved fallback list')
+					for _, id in ipairs(record.models) do assert(not id:find('discovered-', 1, true), 'failed HTTP response was persisted as a catalog') end
+				end
+			end
+		end
+		if options.queuedConnection then
+			local rsi
+			for _, record in ipairs(result.providers.list()) do
+				if record.label == 'Workspace Gateway · RSI AI' then rsi = record end
+			end
+			assert(rsi and #catalogRequests == 3, 'fixture did not leave RSI queued behind three lookups')
+			-- Registry records are mutable; the queued job must keep its original scope.
+			rsi.baseUrl, rsi.models = 'https://edited.fixture.example/rsiai/v1', {'manual-new-connection'}
+			h.settle(20)
+			assert(editedCatalogRequests == 0, 'queued refresh followed an edited connection with its saved key')
+			assert(table.concat(result.providers.get(rsi.id).models, '|') == 'manual-new-connection', 'queued refresh overwrote edited models')
+		end
+		if options.supersedeCatalog then
+			assert(#catalogRequests > 0, 'no background catalog lookup was started')
+			catalogGeneration = 2
+			h.sched.spawn(function() wrapper() end)
+			h.settle(20)
+			for _, record in ipairs(result.providers.list()) do
+				if record.baseUrl:find('https://fixture.example', 1, true) then
+					local found = {}
+					for _, id in ipairs(record.models) do found[id] = true end
+					assert(found['current-generation-model'] and not found['stale-generation-only'], 'superseded catalog job overwrote the new catalog')
+				end
+			end
+		end
+		if options.extraProviders and not options.catalogScopeChanges then
 			local found = {}
 			for _, record in ipairs(result.providers.list()) do
 				if record.label:find('Workspace Gateway', 1, true) then
@@ -169,6 +294,13 @@ local scenarios = {
 		selectedLabel = 'Workspace Gateway · RSI AI', expectedRoute = '/rsiai/v1', expectedModel = 'claude-opus-5-5'}},
 	{'actual Hinoki provider sends and renders a reply', {extraProviders = true, send = true,
 		selectedLabel = 'Workspace Gateway · Hinoki', expectedRoute = '/hinoki/v1', expectedModel = 'hinoki-offensive'}},
+	{'all upstream IDs are persisted and visible in the real model picker', {extraProviders = true, catalogs = true, catalogDelay = 0.2}},
+	{'catalog timeout prevents late persistence', {catalogDelay = 40, lateCatalog = true}},
+	{'catalog refresh preserves manual IDs and selected model', {extraProviders = true, catalogDelay = 10, manualCatalog = true}},
+	{'catalog refresh never resurrects deleted providers or overwrites edited connections', {extraProviders = true, catalogDelay = 10, catalogScopeChanges = true}},
+	{'failed catalogs leave fallback models intact', {catalogFailure = true}},
+	{'superseded catalog jobs cannot overwrite rerun results', {catalogDelay = 10, supersedeCatalog = true}},
+	{'queued refresh cannot follow an in-place connection edit', {extraProviders = true, catalogDelay = 10, queuedConnection = true}},
 }
 local failed = 0
 for _, scenario in ipairs(scenarios) do

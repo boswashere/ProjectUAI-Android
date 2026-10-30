@@ -73844,6 +73844,63 @@ local function origin(body)
 	return "https://" .. host:lower()
 end
 
+-- Use the client's real authenticated discovery, not the small setup seed list.
+-- A catalog job outlives setup, but never a rerun, edited connection or timeout.
+local function refreshCatalogs(records)
+	local loaded, models = pcall(function() return uai.env.require("provider/models") end)
+	if not loaded or type(models) ~= "table" or type(models.discover) ~= "function" then return end
+	local util = uai.env.require("runtime/util")
+	-- Snapshot queued scopes now; registry records can be edited before a worker starts.
+	records = util.deepCopy(records)
+	local fields = { "baseUrl", "api", "apiKey", "authStyle", "headers", "query", "keyMode",
+		"selectedKey", "keyPaused", "keys", "claudeUa", "enabled", "preset" }
+	local function equal(left, right)
+		if type(left) ~= type(right) then return false end
+		if type(left) ~= "table" then return left == right end
+		for key, value in pairs(left) do if not equal(value, right[key]) then return false end end
+		for key in pairs(right) do if left[key] == nil then return false end end
+		return true
+	end
+	local function unchanged(original)
+		local latest = uai.providers.get(original.id)
+		if not latest then return nil end
+		for _, key in ipairs(fields) do if not equal(original[key], latest[key]) then return nil end end
+		return latest
+	end
+	local deadline, nextIndex = os.clock() + 30, 0
+	local slots = uai._workspaceGatewayCatalogSlots or { running = 0 }
+	uai._workspaceGatewayCatalogSlots = slots
+	local function alive()
+		return uai.alive and uai._workspaceGatewaySetup == setup and os.clock() < deadline
+	end
+	for _ = 1, math.min(3, #records) do
+		task.defer(function()
+			while alive() do
+				while alive() and slots.running >= 3 do task.wait(0.1) end
+				if not alive() then return end
+				nextIndex = nextIndex + 1
+				local record = records[nextIndex]
+				if not record then return end
+				local original = util.deepCopy(record)
+				if unchanged(original) then
+					slots.running = slots.running + 1
+					local fetched, found = pcall(models.discover, original, {
+						force = true, timeout = 10,
+						aborted = function() return not alive() or not unchanged(original) end,
+					})
+					slots.running = slots.running - 1
+					local latest = alive() and unchanged(original)
+					if latest and fetched and type(found) == "table" and #found > 0 then
+						local updated = util.copy(latest)
+						updated.models = modelList(latest.models or {}, { models = found })
+						uai.providers.save(updated)
+					end
+				end
+			end
+		end)
+	end
+end
+
 local initial = uai.providers.active()
 local initialId, initialModel = initial and initial.id, initial and initial.model
 local selectDefault = not initial or initial.preset == "hcnsec"
@@ -73868,7 +73925,7 @@ task.defer(function()
 			return
 		end
 
-		local built = {}
+		local built, refresh = {}, {}
 		for _, route in ipairs(decoded.routes) do
 			if not current() then return end
 			local entry = catalog[route]
@@ -73886,10 +73943,13 @@ task.defer(function()
 				record.api, record.authStyle, record.stream = entry.api or "openai", "bearer", false
 				if type(record.model) ~= "string" or record.model == "" then record.model = entry.default end
 				local metadata = type(decoded.providers) == "table" and decoded.providers[route] or nil
-				record.models = modelList(entry.models, metadata)
+				record.models = modelList(record.models or {}, { models = modelList(entry.models, metadata) })
 				local savedOk, saved = uai.providers.save(record)
 				if not savedOk then finish("Gateway settings were rejected; review Providers"); return end
-				if saved.enabled ~= false then built[route] = saved end
+				if saved.enabled ~= false then
+					built[route] = saved
+					refresh[#refresh + 1] = saved
+				end
 			end
 		end
 		if not current() then return end
@@ -73900,6 +73960,7 @@ task.defer(function()
 		if preferred and selectDefault and (active and active.id) == initialId
 			and (active and active.model) == initialModel then uai.providers.setActive(preferred.id) end
 		finish(preferred and "Gateway configured; choose a model in the picker" or "No enabled gateway route; review Providers")
+		refreshCatalogs(refresh)
 	end)
 	if not worked then finish("Gateway setup failed; interface stays open. Review Providers") end
 end)

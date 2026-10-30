@@ -3,7 +3,7 @@
 local function run(options)
 	local state = { labels = {}, records = {}, events = {}, saves = 0, requests = 0 }
 	if options.reuseSavedKey then
-		state.records[1] = { id = '1', label = 'Workspace Gateway', apiKey = 'saved-fixture-token', model = 'gpt-6-astra' }
+		state.records[1] = { id = '1', label = 'Workspace Gateway', apiKey = 'saved-fixture-token', model = 'gpt-6-astra', models = options.savedModels }
 	end
 	local playerGui = {}
 	local env = setmetatable({}, { __index = _G })
@@ -196,5 +196,11 @@ test('configured wire models merge safely without replacing fallback models', fu
 	end
 	assert(models[1] == 'gpt-6-astra', 'fallback models were replaced')
 	assert(count == 1, 'configured models missing or duplicated')
+end)
+test('setup merges previously saved models instead of replacing them with seeds', function()
+	local state = run({reuseSavedKey = true, savedModels = {'manual-custom-model', 'gpt-6-astra'}})
+	local found = {}
+	for _, model in ipairs(state.records[1].models) do found[model] = true end
+	assert(found['manual-custom-model'] and found['gpt-6-astra'], 'setup erased manually saved model IDs')
 end)
 os.exit(failed == 0 and 0 or 1)

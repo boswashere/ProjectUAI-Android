@@ -9,7 +9,7 @@ client does not depend on a long-lived streaming connection.
 | --- | --- | --- |
 | `/v1` | local VibeCode pool (`127.0.0.1:8787`) | GPT-6 Astra/Sol/Luna/Terra, Grok 4.x, Claude via Databricks and Kiro |
 | `/gonka/v1` | GonkaRouter | GLM 5.3 Flash, DeepSeek V4 Flash, MiniMax M2.7 |
-| `/fcc/v1` | existing local FCC gateway (`127.0.0.1:8082`) | Claude Fable / Sonnet wire IDs, using Anthropic Messages |
+| `/fcc/v1` | existing local FCC gateway (`127.0.0.1:8082`) | Full advertised catalog, using Anthropic Messages |
 | `/rsiai/v1` | RSI AI | Claude Opus 5.5 |
 | `/hinoki/v1` | Hinoki | Hinoki Offensive |
 | `/zen/v1` | OpenCode Zen | only enabled when `/root/.secrets/zen-key` holds a key |
@@ -93,6 +93,15 @@ leave the interface open and cannot overwrite providers after the deadline.
 Missing credentials open Providers without making a discovery request. Reruns
 reuse the existing client and preserve an existing model selection.
 
+After connection setup, the client automatically fetches every enabled provider's
+authenticated `/models` catalog. Up to three background lookups share a separate
+30-second refresh window. Validated IDs are merged into the saved provider list,
+including existing manual entries, without changing the selected model. Failed,
+late or superseded lookups cannot replace saved settings. The picker updates as
+catalogs arrive; use its provider selector to browse each provider's models.
+An advertised image, video or embedding ID is retained, but its presence does
+not mean it supports this chat interface.
+
 Discovery tries `game:HttpGet` and then the executor's `request`, `http_request`,
 `syn.request`, `http.request` or `fluxus.request` API. The published endpoint must
 be an HTTPS origin. A client startup failure raises an executor error instead
@@ -124,6 +133,8 @@ These tests compile and run the real loader and pinned client. They cover mobile
 startup, PlayerGui fallback, executor HTTP aliases, offline/hanging discovery,
 reexecution, explicit startup failures and the send-button-to-reply path.
 They also exercise FCC, RSI AI and Hinoki through the real client/provider adapter.
+Catalog coverage includes full picker rows, persistence, concurrency limits,
+failed/late refreshes, reruns, and providers edited or deleted during a lookup.
 Roblox services and HTTP responses are test fixtures; this is not a substitute
 for checking rendering in a Roblox executor. Additional checks:
 
