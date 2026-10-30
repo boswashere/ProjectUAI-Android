@@ -8,6 +8,10 @@ Routes:
 
   /v1/models, /v1/chat/completions            local VibeCode pool (127.0.0.1:8787)
   /gonka/v1/models, /gonka/v1/chat/completions  GonkaRouter (GLM, DeepSeek, MiniMax)
+  /zen/v1/models, /zen/v1/chat/completions      OpenCode Zen (only with a key on disk)
+
+`GET /routes` lists the prefixes that are live, so the Android loader only
+creates providers this host can actually serve.
 
 Replies are non-streaming because Cloudflare Quick Tunnels do not carry SSE.
 """
@@ -21,20 +25,33 @@ from threading import BoundedSemaphore
 
 TOKEN_FILE = Path('/root/.secrets/uai-gateway-token')
 GONKA_KEY_FILE = Path('/root/.secrets/gonkarouter-key')
+ZEN_KEY_FILE = Path('/root/.secrets/zen-key')
 SLOTS = BoundedSemaphore(4)
 MAX_BODY = 2 * 1024 * 1024
 MAX_REPLY = 16 * 1024 * 1024
 UPSTREAM_TIMEOUT = 95
 
-# prefix, host, port, tls, key file, upstream path prefix
+# prefix, host, port, tls, key file, upstream path prefix, needs a key
 ROUTES = (
-    ('/v1/', '127.0.0.1', 8787, False, None, '/v1/'),
-    ('/gonka/v1/', 'api.gonkarouter.io', 443, True, GONKA_KEY_FILE, '/v1/'),
+    ('/v1/', '127.0.0.1', 8787, False, None, '/v1/', False),
+    ('/gonka/v1/', 'api.gonkarouter.io', 443, True, GONKA_KEY_FILE, '/v1/', True),
+    ('/zen/v1/', 'opencode.ai', 443, True, ZEN_KEY_FILE, '/v1/', True),
 )
 
 
+def has_key(path):
+    try:
+        return bool(path.read_text().strip())
+    except OSError:
+        return False
+
+
+def active_routes():
+    return [route for route in ROUTES if not route[6] or has_key(route[4])]
+
+
 def route_for(path):
-    for prefix, host, port, tls, key_file, upstream_prefix in ROUTES:
+    for prefix, host, port, tls, key_file, upstream_prefix, _ in active_routes():
         if path.startswith(prefix):
             return prefix, host, port, tls, key_file, upstream_prefix + path[len(prefix):]
     return None
@@ -64,6 +81,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if self.path == '/routes':
+            body = json.dumps({'routes': [route[0].rstrip('/') for route in active_routes()]}).encode()
+            self.reply(200, body)
+            return
         self.forward()
 
     def do_POST(self):

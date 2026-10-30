@@ -107,7 +107,7 @@ for _ in $(seq 1 20); do
 done
 [ "$code" = "200" ] || { echo "public gateway check returned $code" >&2; exit 1; }
 
-# 5. Point the published loader at the live URL.
+# 5. Point the published loader at the live URL and publish any local edits.
 LOADER="$ROOT/examples/gateway.lua"
 if ! grep -qF "$URL" "$LOADER"; then
 	python3 - "$LOADER" "$URL" <<'PY'
@@ -118,11 +118,14 @@ text = re.sub(r'local endpoint = "[^"]*"', 'local endpoint = "%s"' % url, text, 
 open(path, 'w', encoding='utf-8').write(text)
 PY
 	echo "updated $LOADER"
-	if [ -f "$PAT_FILE" ] && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+fi
+
+if [ -f "$PAT_FILE" ] && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+	git -C "$ROOT" add examples/gateway.lua gateway.py examples/GATEWAY_SETUP.md start-gateway.sh
+	if ! git -C "$ROOT" diff --cached --quiet; then
 		PAT="$(cat "$PAT_FILE")"
-		git -C "$ROOT" add examples/gateway.lua gateway.py examples/GATEWAY_SETUP.md start-gateway.sh
 		git -C "$ROOT" -c user.name="UAI gateway" -c user.email="uai@localhost" \
-			commit -m "Point the Android gateway loader at the live tunnel" >/dev/null 2>&1 || true
+			commit -m "Point the Android gateway loader at the live tunnel" >/dev/null
 		git -C "$ROOT" -c http.extraheader="Authorization: Basic $(printf 'x-access-token:%s' "$PAT" | base64 -w0)" \
 			push origin HEAD:main
 	fi
