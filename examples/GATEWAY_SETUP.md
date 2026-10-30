@@ -2,8 +2,8 @@
 
 One authenticated gateway fronts every model pool the host has credit on.
 Provider keys never leave the host. Only model listing and chat completions are
-exposed, and replies are non-streaming because Cloudflare Quick Tunnels do not
-carry SSE.
+exposed. This gateway deliberately returns non-streaming JSON replies so the
+client does not depend on a long-lived streaming connection.
 
 | Route | Upstream | Models |
 | --- | --- | --- |
@@ -29,6 +29,8 @@ The script starts the VibeCode monitor if needed, starts `gateway.py` on port
 8792, opens the tunnel, verifies the public route, writes the live address to
 `endpoint.txt`, and pushes that file. The loader reads `endpoint.txt` at run
 time, so a rotated hostname never needs the loader rewritten.
+Automated publication commits only `endpoint.txt`, leaving the generated script
+and unrelated staged work untouched.
 
 The tunnel runs under a supervisor loop with `--protocol http2 --edge-ip-version 4`.
 QUIC re-registers every minute on this network, and a dead tunnel used to answer
@@ -55,8 +57,10 @@ automatically once `TOKEN` is filled in.
 
 ## Load it in UAI
 
-The compatibility loader pins client **3.7.1** at upstream commit
-`d5060d3c4868cf6676ac191a1aa7708b78fa6b6d` instead of tracking `main`.
+The self-contained script embeds client **3.7.1** from upstream commit
+`d5060d3c4868cf6676ac191a1aa7708b78fa6b6d` instead of tracking upstream `main`.
+It requires one script download and one compile step in your launcher, with no
+second client download or runtime compilation inside the script.
 It changes only the client's storage folder to `UAI-Compat-3.7.1`, preserving
 the newer `UAI` settings and encrypted vault without reading or migrating them.
 This older client stores settings without the newer vault encryption. Only
@@ -76,11 +80,30 @@ gateway token as private: it authorizes spending from the host's pools.
 On this host the token is `/root/.secrets/uai-gateway-token` and a complete
 private launcher is `/root/.secrets/uai-gateway-launcher.lua`.
 
-The loader tries `game:HttpGet` and then the executor's `request`, `http_request`,
-`syn.request`, `http.request` or `fluxus.request` API. A failed download, compile
-or client startup raises an executor error as well as leaving its diagnostic
-on screen when GUI creation is available. It does not silently return an empty
-result. Tunnel discovery starts only after the client interface is opened.
+The client interface opens before optional gateway discovery starts. Discovery
+runs in the background with a 12-second deadline; offline or late responses
+leave the interface open and cannot overwrite providers after the deadline.
+Missing credentials open Providers without making a discovery request. Reruns
+reuse the existing client and preserve an existing model selection.
+
+Discovery tries `game:HttpGet` and then the executor's `request`, `http_request`,
+`syn.request`, `http.request` or `fluxus.request` API. The published endpoint must
+be an HTTPS origin. A client startup failure raises an executor error instead
+of silently returning, with an on-screen diagnostic when GUI creation works.
+
+## Rebuild the script
+
+`examples/gateway.lua` is generated; do not edit it directly. Modify
+`src/gateway_bootstrap.lua`, then build from a checkout containing the pinned
+upstream bundle:
+
+```sh
+node tools/build-gateway.cjs /path/to/ProjectUAI
+node tools/build-gateway.cjs /path/to/ProjectUAI --check
+```
+
+The builder verifies the upstream SHA-256, preserves its MIT attribution, and
+applies only the documented compatibility-folder substitution to client code.
 
 ## Native bootstrap tests
 
@@ -91,24 +114,31 @@ node test/native_gateway_loader.cjs /path/to/ProjectUAI /path/to/luau
 ```
 
 These tests compile and run the real loader and pinned client. They cover mobile
-startup, PlayerGui fallback, executor HTTP aliases, explicit startup failures and
-the send-button-to-reply path. Roblox services and HTTP responses are test
-fixtures; this is not a substitute for checking rendering in a Roblox executor.
+startup, PlayerGui fallback, executor HTTP aliases, offline/hanging discovery,
+reexecution, explicit startup failures and the send-button-to-reply path.
+Roblox services and HTTP responses are test fixtures; this is not a substitute
+for checking rendering in a Roblox executor. Additional checks:
+
+```sh
+node --test test/build_gateway.test.cjs
+lua5.4 test/gateway_loader.lua
+lua5.4 test/android_setup.lua
+python3 -m unittest discover -s test -v
+bash -n start-gateway.sh watch-gateway.sh
+```
 
 ## Provider notes
 
-- **VibeCode pool.** Its upstream host (`ru.vibecode-claude.online`) drops TLS
-  handshakes from this network for minutes at a time, which the pool reports as
-  `upstream connection failed: SSL: UNEXPECTED_EOF_WHILE_READING`. The gateway
-  retries once and then answers `503` with a JSON message rather than letting
-  Cloudflare replace it with HTML. The loader activates `/gonka/v1` first for that
-  reason; VibeCode stays saved and enabled so UAI's fallback still reaches it
-  when the host recovers.
+- **VibeCode pool.** Its upstream can intermittently fail TLS handshakes, reported
+  as `SSL: UNEXPECTED_EOF_WHILE_READING`. Connection failures return a JSON error.
+  New setups prefer `/gonka/v1`; existing selections are preserved. VibeCode
+  remains available in the picker when its route is enabled.
 - **OpenCode Zen** needs a key or a Go subscription. The anonymous free tier is
   rate-limited per address and returns `FreeUsageLimitError` here, so the route is
   only mounted when `/root/.secrets/zen-key` exists.
-- **GonkaRouter** GLM replies can take a minute. The gateway allows 95 seconds and
-  Cloudflare drops a request at roughly 100 seconds.
+- **GonkaRouter** GLM replies can take a minute. The gateway configures an
+  88-second exchange budget and an 80-second upstream socket timeout. The
+  12-second discovery deadline is separate from an inference request.
 
 ## Limits
 

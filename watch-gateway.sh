@@ -83,9 +83,11 @@ publish() {
 	if [ -f "$PAT_FILE" ] && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
 		local pat
 		pat="$(cat "$PAT_FILE")"
-		git -C "$ROOT" add endpoint.txt >/dev/null 2>&1 || true
-		git -C "$ROOT" -c user.name="UAI gateway" -c user.email="uai@localhost" \
-			commit -q -m "Publish the live gateway address" >/dev/null 2>&1 || true
+		git -C "$ROOT" add -- endpoint.txt >/dev/null 2>&1 || return 1
+		if ! git -C "$ROOT" diff --cached --quiet -- endpoint.txt; then
+			git -C "$ROOT" -c user.name="UAI gateway" -c user.email="uai@localhost" \
+				commit --only -q -m "Publish the live gateway address" -- endpoint.txt >/dev/null 2>&1 || return 1
+		fi
 		git -C "$ROOT" -c http.extraheader="Authorization: Basic $(printf 'x-access-token:%s' "$pat" | base64 -w0)" \
 			push -q origin HEAD:main >/dev/null 2>&1 && log "pushed $url"
 	fi

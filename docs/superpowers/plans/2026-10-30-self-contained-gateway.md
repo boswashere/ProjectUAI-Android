@@ -52,9 +52,9 @@
 
 **Files:** `start-gateway.sh`, `watch-gateway.sh`, publisher regression tests, `examples/GATEWAY_SETUP.md`.
 
-- [ ] Add a test pinning endpoint-only publication and no generated-script mutation.
-- [ ] Remove generated-loader rewriting and limit automated commits to `endpoint.txt`.
-- [ ] Review changes, then run native, Lua, Python, Node tests and shell syntax/diff checks.
+- [x] Add a test pinning endpoint-only publication and no generated-script mutation.
+- [x] Remove generated-loader rewriting and limit automated commits to `endpoint.txt`.
+- [x] Review changes, then run native, Lua, Python, Node tests and shell syntax/diff checks.
 - [ ] Commit/push reviewed files and verify the immutable public artifact matches the tested build.
 - [ ] Resume the watcher and verify public routes, denied unauthenticated inference, and real VibeCode/GLM completions.
 - [ ] Report separately which checks passed and that physical executor rendering remains unverified.

@@ -197,25 +197,14 @@ if [ "$(current_url || true)" != "$URL" ]; then
 	echo "published $ENDPOINT_FILE"
 fi
 
-# Keep the loader's hardcoded fallback in step, so a run that cannot reach
-# endpoint.txt still points somewhere real.
-python3 - "$ROOT/examples/gateway.lua" "$URL" <<'PY'
-import re, sys
-path, url = sys.argv[1], sys.argv[2]
-text = open(path, encoding='utf-8').read()
-new = re.sub(r'local FALLBACK_ENDPOINT = "[^"]*"',
-             'local FALLBACK_ENDPOINT = "%s"' % url, text, count=1)
-if new != text:
-    open(path, 'w', encoding='utf-8').write(new)
-PY
-
+# gateway.lua is a generated, self-contained artifact. Runtime recovery only
+# publishes the endpoint; it must not rewrite code or commit someone else's work.
 if [ -f "$PAT_FILE" ] && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
-	git -C "$ROOT" add endpoint.txt examples/gateway.lua gateway.py \
-		examples/GATEWAY_SETUP.md start-gateway.sh cf-tunnel.conf.example 2>/dev/null || true
-	if ! git -C "$ROOT" diff --cached --quiet; then
+	git -C "$ROOT" add -- endpoint.txt
+	if ! git -C "$ROOT" diff --cached --quiet -- endpoint.txt; then
 		PAT="$(cat "$PAT_FILE")"
 		git -C "$ROOT" -c user.name="UAI gateway" -c user.email="uai@localhost" \
-			commit -m "Publish the live gateway address" >/dev/null
+			commit --only -m "Publish the live gateway address" -- endpoint.txt >/dev/null
 		git -C "$ROOT" -c http.extraheader="Authorization: Basic $(printf 'x-access-token:%s' "$PAT" | base64 -w0)" \
 			push origin HEAD:main >/dev/null
 		echo "pushed"
