@@ -23,8 +23,8 @@ local function status(text)
 	notify(text)
 	pcall(function()
 		if not statusGui then
-			local parent = game:GetService("CoreGui")
 			local ok, gui = pcall(function()
+				local parent = game:GetService("CoreGui")
 				local g = Instance.new("ScreenGui")
 				g.Name = "UAILoaderStatus"
 				g.ResetOnSpawn = false
@@ -38,7 +38,8 @@ local function status(text)
 				gui = Instance.new("ScreenGui")
 				gui.Name = "UAILoaderStatus"
 				gui.ResetOnSpawn = false
-				gui.Parent = player:WaitForChild("PlayerGui")
+				gui.Parent = assert(player and (player:FindFirstChild("PlayerGui")
+					or player:WaitForChild("PlayerGui", 5)), "PlayerGui unavailable")
 			end
 			statusGui = gui
 			local label = Instance.new("TextLabel")
@@ -81,15 +82,6 @@ local function decode(text)
 	return nil
 end
 
-status("reading endpoint")
-local endpoint = FALLBACK_ENDPOINT
-do
-	local body = httpGet(REPO .. "endpoint.txt")
-	local found = type(body) == "string" and body:match("https://[%w%.%-]+") or nil
-	if found then endpoint = found end
-	status("endpoint " .. endpoint)
-end
-
 status("downloading UAI")
 local source = httpGet("https://raw.githubusercontent.com/Project-Ptolemy/ProjectUAI/main/dist/uai.lua")
 if not source or #source < 100000 then
@@ -105,7 +97,7 @@ if not chunk then
 end
 
 status("starting UAI")
-local ok, uai = pcall(chunk)
+local ok, uai = pcall(chunk, { ui = true, reuse = true })
 if not ok then
 	status("start failed: " .. tostring(uai))
 	return
@@ -113,6 +105,23 @@ end
 if type(uai) ~= "table" or not uai.alive then
 	status("start returned no client: " .. tostring(uai))
 	return
+end
+
+-- Opening the UI must not depend on a tunnel or model discovery request.
+-- In particular, saved headless contexts do not auto-mount the upstream UI.
+status("opening interface")
+local shown, why = uai.show("chat")
+if not shown then
+	status("show failed: " .. tostring(why))
+	error("[UAI] Cannot open interface: " .. tostring(why), 0)
+end
+
+status("reading endpoint; interface is open")
+local endpoint = FALLBACK_ENDPOINT
+do
+	local body = httpGet(REPO .. "endpoint.txt")
+	local found = type(body) == "string" and body:match("https://[%w%.%-]+") or nil
+	if found then endpoint = found end
 end
 status("UAI up, configuring providers")
 
@@ -208,22 +217,17 @@ end
 local preference = { "/gonka/v1", "/v1", "/zen/v1" }
 local active = built[1]
 for _, route in ipairs(preference) do
+	local selected = false
 	for _, saved in ipairs(built) do
-		if saved.baseUrl == endpoint .. route then active = saved end
+		if saved.baseUrl == endpoint .. route then
+			active = saved
+			selected = true
+			break
+		end
 	end
+	if selected then break end
 end
 uai.providers.setActive(active.id)
-
-status("opening interface")
-local shown, why = uai.show("chat")
-if not shown then
-	status("show failed: " .. tostring(why))
-	local toggled, toggleWhy = uai.toggle()
-	if not toggled then
-		status("toggle failed: " .. tostring(toggleWhy))
-		return uai
-	end
-end
 
 status("ready: " .. tostring(active.label) .. " / " .. tostring(active.model))
 task.delay(4, clearStatus)
