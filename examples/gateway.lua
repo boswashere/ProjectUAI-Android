@@ -12,7 +12,7 @@ local token = ...
 local REPO = "https://raw.githubusercontent.com/boswashere/ProjectUAI-Android/main/"
 -- Explicit rollback: never silently replace the working UI with upstream main.
 local CLIENT_URL = "https://raw.githubusercontent.com/Project-Ptolemy/ProjectUAI/d5060d3c4868cf6676ac191a1aa7708b78fa6b6d/dist/uai.lua"
-local FALLBACK_ENDPOINT = "https://accessed-growing-lap-breeding.trycloudflare.com"
+local FALLBACK_ENDPOINT = "https://serving-honor-spatial-fishing.trycloudflare.com"
 
 local function notify(text)
 	warn("[UAI] " .. text)
