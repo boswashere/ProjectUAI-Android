@@ -8,6 +8,14 @@
 
 - [x] Add failing native integration cases for full catalogs and picker rows, bounded concurrency, failed/late/superseded refreshes, and preserving manual IDs/current selection.
 - [x] Implement the additive background refresh and list merge; regenerate the artifact and run the complete suite.
-- [ ] Review, publish the same working URL, verify public catalogs and exact artifact, and resume the existing endpoint watcher.
+- [x] Review, publish the same working URL, verify public catalogs and exact artifact, and resume the existing endpoint watcher.
 
 **Review:** Single-agent, honoring the standing restriction on unrequested delegation. Work in the operational checkout with its endpoint watcher paused. No new packages, worktrees, services, or credentials.
+
+## Verification record
+
+- Published revision: `50c04565e4201c037af8034ecafffc9bfa3a5efb`.
+- The exact `main/examples/gateway.lua` URL matches the tested generated artifact byte-for-byte: 3,816,273 bytes, SHA-256 `cba24ca8b0568623ff092805763da93e920d64c2bdedceebb8778bdd6fb1797f`.
+- Full local suite: builder 3/3, native real-client integration 24/24, bootstrap 13/13, Android setup passed, Python 14/14, shell syntax and diff checks passed.
+- Public authenticated model catalogs: VibeCode 32, Gonka 3, FCC 62, RSI AI 1, Hinoki 1 (99 total IDs); unauthenticated model access returns 403.
+- Public routes returned HTTP 200 after the existing watcher was resumed. The native tests use mocked Roblox/HTTP boundaries; physical executor rendering is not re-tested here.
