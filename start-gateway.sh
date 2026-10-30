@@ -199,7 +199,7 @@ fi
 
 if [ -f "$PAT_FILE" ] && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
 	git -C "$ROOT" add endpoint.txt examples/gateway.lua gateway.py \
-		examples/GATEWAY_SETUP.md start-gateway.sh 2>/dev/null || true
+		examples/GATEWAY_SETUP.md start-gateway.sh cf-tunnel.conf.example 2>/dev/null || true
 	if ! git -C "$ROOT" diff --cached --quiet; then
 		PAT="$(cat "$PAT_FILE")"
 		git -C "$ROOT" -c user.name="UAI gateway" -c user.email="uai@localhost" \

@@ -1,0 +1,17 @@
+# Named Cloudflare tunnel for the UAI gateway.
+#
+# Fill both lines in, then run:  ./start-gateway.sh --named
+#
+# 1. Cloudflare dashboard -> Zero Trust -> Networks -> Tunnels -> Create a tunnel
+#    -> Cloudflared -> name it (for example "uai-gateway").
+# 2. Copy the token it shows you into TOKEN below.
+# 3. On that tunnel's Public Hostname tab add:
+#       Subdomain: uai          Domain: <your domain>
+#       Service:   HTTP  ->  http://127.0.0.1:8792
+#    and put the full hostname in HOSTNAME below.
+#
+# The hostname is permanent, so endpoint.txt stops changing and the Android loader
+# never needs a fresh URL. Without this file the script keeps using a quick tunnel
+# and republishes endpoint.txt whenever the random hostname rotates.
+TOKEN=
+HOSTNAME=

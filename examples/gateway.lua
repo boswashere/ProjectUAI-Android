@@ -107,9 +107,21 @@ local function configure(route)
 end
 
 local active
+-- Preference order, not discovery order: the VibeCode pool's upstream host
+-- (ru.vibecode-claude.online) drops TLS handshakes from this network for minutes
+-- at a time, so a route that answers reliably is activated first. The others stay
+-- saved and enabled, and UAI's provider fallback still tries them.
+local preference = { "/gonka/v1", "/v1", "/zen/v1" }
+for _, wanted in ipairs(preference) do
+	for _, route in ipairs(routes) do
+		if route == wanted then
+			local saved = configure(route)
+			if saved and not active then active = saved end
+		end
+	end
+end
 for _, route in ipairs(routes) do
-	local saved = configure(route)
-	if saved and not active then active = saved end
+	if not active then active = configure(route) end
 end
 
 if not active then
