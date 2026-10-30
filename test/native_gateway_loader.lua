@@ -23,6 +23,17 @@ local function run(options)
 	end
 	h.http.handler = function(entry)
 		if options.offline then error('Executor HTTP unavailable') end
+		if entry.url:find('/fcc/v1/chat/completions', 1, true) then
+			return {StatusCode = 404, Body = '{"detail":"Not Found"}', Headers = {['content-type'] = 'application/json'}}
+		end
+		if entry.url:find('/messages', 1, true) then
+			chatRequests[#chatRequests + 1] = entry
+			return {StatusCode = 200, Body = h.json.encode({
+				id = 'fixture-message', type = 'message', role = 'assistant', model = h.json.decode(entry.body).model,
+				content = {{type = 'text', text = 'Fixture reply rendered'}}, stop_reason = 'end_turn',
+				usage = {input_tokens = 10, output_tokens = 4},
+			}), Headers = {['content-type'] = 'application/json'}}
+		end
 		if entry.url:find('/chat/completions', 1, true) then
 			chatRequests[#chatRequests + 1] = entry
 			return {StatusCode = 200, Body = h.json.encode({
@@ -124,7 +135,8 @@ local function run(options)
 			h.settle(10)
 			assert(#chatRequests == 1, 'send button did not produce exactly one provider request')
 			local entry = chatRequests[1]
-			assert(entry.url == 'https://fixture.example' .. (options.expectedRoute or '/gonka/v1') .. '/chat/completions', 'wrong provider URL')
+			assert(entry.url == 'https://fixture.example' .. (options.expectedRoute or '/gonka/v1')
+				.. (options.expectedEndpoint or '/chat/completions'), 'wrong provider URL')
 			assert(entry.headers.Authorization == 'Bearer fixture-only-gateway-token', 'gateway auth not attached')
 			local payload = h.json.decode(entry.body)
 			assert(payload.model == (options.expectedModel or 'zai-org/GLM-5.3-Flash'), 'wrong model in provider request')
@@ -152,7 +164,7 @@ local scenarios = {
 	{'no token still opens the actual interface', {noToken = true}},
 	{'actual client reexecution preserves visibility providers and selection', {rerun = true}},
 	{'actual FCC provider sends and renders a reply', {extraProviders = true, send = true,
-		selectedLabel = 'Workspace Gateway · FCC', expectedRoute = '/fcc/v1', expectedModel = 'claude-fable-5'}},
+		selectedLabel = 'Workspace Gateway · FCC', expectedRoute = '/fcc/v1', expectedEndpoint = '/messages', expectedModel = 'claude-fable-5'}},
 	{'actual RSI AI provider sends and renders a reply', {extraProviders = true, send = true,
 		selectedLabel = 'Workspace Gateway · RSI AI', expectedRoute = '/rsiai/v1', expectedModel = 'claude-opus-5-5'}},
 	{'actual Hinoki provider sends and renders a reply', {extraProviders = true, send = true,

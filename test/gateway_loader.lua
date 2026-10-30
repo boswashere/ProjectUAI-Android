@@ -176,6 +176,8 @@ test('all five existing provider connections use only the shared gateway token',
 		assert(record.apiKey == 'fixture-token', 'upstream credential was substituted into client settings')
 		if expected[record.label] then
 			assert(record.model == expected[record.label], 'wrong wire model for ' .. record.label)
+			assert(record.api == (record.label == 'Workspace Gateway · FCC' and 'anthropic' or 'openai'),
+				'wrong protocol for ' .. record.label)
 			expected[record.label] = nil
 		end
 	end

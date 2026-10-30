@@ -54,10 +54,13 @@ class GatewayTests(unittest.TestCase):
         module = self.load_gateway()
         with patch.object(module, 'has_key', return_value=True):
             for prefix in ['/v1', '/gonka/v1', '/fcc/v1', '/rsiai/v1', '/hinoki/v1']:
+                completion = '/messages' if prefix == '/fcc/v1' else '/chat/completions'
                 self.assertTrue(module.allowed('GET', prefix + '/models'))
-                self.assertTrue(module.allowed('POST', prefix + '/chat/completions'))
+                self.assertTrue(module.allowed('POST', prefix + completion))
                 self.assertFalse(module.allowed('GET', prefix + '/private/models'))
                 self.assertFalse(module.allowed('POST', prefix + '/private/chat/completions'))
+            self.assertFalse(module.allowed('POST', '/fcc/v1/chat/completions'))
+            self.assertFalse(module.allowed('POST', '/rsiai/v1/messages'))
 
     def test_optional_zen_route_keeps_its_documented_upstream_prefix(self):
         module = self.load_gateway()
@@ -71,10 +74,13 @@ class GatewayTests(unittest.TestCase):
         def upstream(host, port, **kwargs):
             from unittest.mock import Mock
             connection = Mock()
-            connection.request.side_effect = lambda method, path, body, headers: forwarded.append(
-                (host, port, method, path, json.loads(body), headers))
+            def request(method, path, body, headers):
+                forwarded.append((host, port, method, path, json.loads(body), headers))
+                reply = ({'type': 'message', 'content': [{'type': 'text', 'text': 'fixture'}]}
+                         if path == '/v1/messages' else {'choices': [{'message': {'content': 'fixture'}}]})
+                connection.getresponse.return_value.read.return_value = json.dumps(reply).encode()
+            connection.request.side_effect = request
             connection.getresponse.return_value.status = 200
-            connection.getresponse.return_value.read.return_value = b'{"choices":[{"message":{"content":"fixture"}}]}'
             return connection
 
         def exercise(server):
@@ -82,14 +88,20 @@ class GatewayTests(unittest.TestCase):
                                        ('/rsiai/v1', 'www.rsiai.net', 443),
                                        ('/hinoki/v1', 'inference.hinoki.security', 443)]:
                 payload = json.dumps({'model': 'fixture-model', 'messages': [], 'stream': True})
-                denied, _ = self.request(server, 'POST', prefix + '/chat/completions', 'wrong', payload)
+                completion = '/messages' if prefix == '/fcc/v1' else '/chat/completions'
+                denied, _ = self.request(server, 'POST', prefix + completion, 'wrong', payload)
                 self.assertEqual(denied, 403)
-                status, body = self.request(server, 'POST', prefix + '/chat/completions', body=payload)
+                status, body = self.request(server, 'POST', prefix + completion, body=payload)
                 self.assertEqual(status, 200)
-                self.assertEqual(body['choices'][0]['message']['content'], 'fixture')
+                if completion == '/messages':
+                    self.assertEqual(body['content'][0]['text'], 'fixture')
+                else:
+                    self.assertEqual(body['choices'][0]['message']['content'], 'fixture')
                 actual_host, actual_port, method, path, sent, headers = forwarded[-1]
-                self.assertEqual((actual_host, actual_port, method, path), (host, port, 'POST', '/v1/chat/completions'))
+                self.assertEqual((actual_host, actual_port, method, path), (host, port, 'POST', '/v1' + completion))
                 self.assertEqual(headers['Authorization'], 'Bearer upstream-fixture')
+                if completion == '/messages':
+                    self.assertEqual(headers['anthropic-version'], '2023-06-01')
                 self.assertFalse(sent['stream'])
                 self.assertNotIn('gateway-fixture', json.dumps(forwarded[-1]))
             self.assertEqual(len(forwarded), 3)

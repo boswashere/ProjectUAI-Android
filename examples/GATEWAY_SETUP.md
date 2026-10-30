@@ -9,7 +9,7 @@ client does not depend on a long-lived streaming connection.
 | --- | --- | --- |
 | `/v1` | local VibeCode pool (`127.0.0.1:8787`) | GPT-6 Astra/Sol/Luna/Terra, Grok 4.x, Claude via Databricks and Kiro |
 | `/gonka/v1` | GonkaRouter | GLM 5.3 Flash, DeepSeek V4 Flash, MiniMax M2.7 |
-| `/fcc/v1` | existing local FCC gateway (`127.0.0.1:8082`) | configured Claude Fable / Sonnet wire IDs |
+| `/fcc/v1` | existing local FCC gateway (`127.0.0.1:8082`) | Claude Fable / Sonnet wire IDs, using Anthropic Messages |
 | `/rsiai/v1` | RSI AI | Claude Opus 5.5 |
 | `/hinoki/v1` | Hinoki | Hinoki Offensive |
 | `/zen/v1` | OpenCode Zen | only enabled when `/root/.secrets/zen-key` holds a key |

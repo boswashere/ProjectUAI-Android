@@ -117,7 +117,7 @@ local catalog = {
 		models = { "glm-5.3-flash-free", "deepseek-v4.1-flash-free", "big-pickle", "beam-free", "flint-40b-free", "mimo-v2.6-flash-free", "nemotron-3.5-super-vl-free", "nemotron-3.5-lightning-free" },
 	},
 	["/fcc/v1"] = {
-		label = "Workspace Gateway · FCC", default = "claude-fable-5",
+		label = "Workspace Gateway · FCC", default = "claude-fable-5", api = "anthropic",
 		models = { "claude-fable-5", "claude-sonnet-4-20250514" },
 	},
 	["/rsiai/v1"] = {
@@ -217,7 +217,7 @@ task.defer(function()
 				end
 				record = record or uai.providers.blank("custom")
 				record.label, record.baseUrl, record.apiKey = entry.label, endpoint .. route, token
-				record.api, record.authStyle, record.stream = "openai", "bearer", false
+				record.api, record.authStyle, record.stream = entry.api or "openai", "bearer", false
 				if type(record.model) ~= "string" or record.model == "" then record.model = entry.default end
 				local metadata = type(decoded.providers) == "table" and decoded.providers[route] or nil
 				record.models = modelList(entry.models, metadata)

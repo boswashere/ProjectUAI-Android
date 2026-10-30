@@ -89,7 +89,8 @@ def allowed(method, path):
     if not route:
         return False
     rest = path[len(route[0]):]
-    return (method, rest) in {('GET', 'models'), ('POST', 'chat/completions')}
+    completion = 'messages' if route[0] == '/fcc/v1/' else 'chat/completions'
+    return (method, rest) in {('GET', 'models'), ('POST', completion)}
 
 
 def record(entry):
@@ -201,6 +202,8 @@ class Handler(BaseHTTPRequestHandler):
 
             _, host, port, tls, key_file, upstream_path = route
             headers = {'Content-Type': 'application/json'}
+            if route[0] == '/fcc/v1/':
+                headers['anthropic-version'] = '2023-06-01'
             if key_file:
                 key = key_file.read_text().strip()
                 if not key:
