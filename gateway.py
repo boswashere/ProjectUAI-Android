@@ -26,10 +26,12 @@ import json
 import os
 import ssl
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import BoundedSemaphore, Lock
 from gateway_sources import ProviderKey, configured_models
+from gateway_body import UploadError, read_request_body
 
 TOKEN_FILE = Path('/root/.secrets/uai-gateway-token')
 GONKA_KEY_FILE = Path('/root/.secrets/gonkarouter-key')
@@ -41,7 +43,9 @@ LOG_DIR = Path('/root/var/log')
 ACCESS_LOG = LOG_DIR / 'uai-gateway-access.jsonl'
 
 SLOTS = BoundedSemaphore(4)
-MAX_BODY = 2 * 1024 * 1024
+# Match the existing UAI bridge request ceiling; tool/context payloads alone can
+# exceed the old 2 MiB cap. Four inference slots still bound concurrent uploads.
+MAX_BODY = 32 * 1024 * 1024
 MAX_REPLY = 16 * 1024 * 1024
 UPSTREAM_TIMEOUT = 80
 # Total wall clock allowed per request. Cloudflare ends a request near 100s.
@@ -114,10 +118,18 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def reply(self, status, body, extra=None):
+        if status >= 400:
+            # Rejected uploads may still have unread bytes. Never parse them as
+            # another HTTP request on this connection.
+            self.close_connection = True
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Cache-Control', 'no-store')
         self.send_header('Content-Length', str(len(body)))
+        if getattr(self, 'request_id', None):
+            self.send_header('X-UAI-Request-Id', self.request_id)
+        if self.close_connection:
+            self.send_header('Connection', 'close')
         for name, value in (extra or {}).items():
             self.send_header(name, value)
         self.end_headers()
@@ -162,7 +174,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def forward(self):
         started = time.monotonic()
-        entry = {'method': self.command, 'path': self.path}
+        self.request_id = uuid.uuid4().hex
+        entry = {'event': 'gateway_request', 'entry_point': 'inference',
+                 'request_id': self.request_id, 'method': self.command, 'path': self.path}
         authorization = self.headers.get('Authorization', '')
         if not self.server.token or not hmac.compare_digest(
                 authorization.encode(), ('Bearer ' + self.server.token).encode()):
@@ -183,16 +197,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         upstream = None
         try:
+            uploaded = read_request_body(self.headers, self.rfile, MAX_BODY, entry,
+                                         self.connection.settimeout)
             self.connection.settimeout(CLIENT_TIMEOUT)
-            length = int(self.headers.get('Content-Length', '0'))
-            if self.headers.get('Transfer-Encoding') or not 0 <= length <= MAX_BODY:
-                entry['status'] = 413
-                record(entry)
-                self.reply(413, b'{"error":"Invalid request size"}')
-                return
             body = None
             if self.command == 'POST':
-                payload = json.loads(self.rfile.read(length))
+                payload = json.loads(uploaded)
                 if not isinstance(payload, dict):
                     raise ValueError('Expected object')
                 entry['model'] = payload.get('model')
@@ -282,8 +292,18 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 record(entry)
                 self.reply(status, data)
+        except UploadError as exc:
+            entry['status'] = exc.status
+            entry['error_code'] = exc.code
+            entry['ms'] = round((time.monotonic() - started) * 1000)
+            record(entry)
+            error = {'error': str(exc), 'code': exc.code, 'request_id': self.request_id}
+            if exc.status == 413:
+                error['limit_bytes'] = MAX_BODY
+            self.reply(exc.status, json.dumps(error).encode())
         except (ValueError, UnicodeError):
             entry['status'] = 400
+            entry['error_code'] = 'invalid_json_request'
             record(entry)
             self.reply(400, b'{"error":"Invalid JSON request"}')
         except (OSError, http.client.HTTPException) as exc:

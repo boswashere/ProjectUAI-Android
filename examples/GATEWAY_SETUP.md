@@ -171,6 +171,17 @@ bash -n start-gateway.sh watch-gateway.sh
 
 ## Limits
 
+- Uploads accept bounded `Content-Length` or chunked bodies up to **32 MiB**,
+  matching the existing UAI bridge request ceiling. This replaces the older
+  2 MiB guard, which could reject supported tool/context payloads. Four inference
+  slots remain, and each upload has a 30-second read budget.
+- Oversized uploads return JSON `413` with `code: request_too_large` and
+  `limit_bytes`; malformed or ambiguous framing returns `400`. Rejected
+  connections close so unread body bytes cannot become another request.
+- Inference responses include `X-UAI-Request-Id`. Access-log entries record that
+  ID, request framing, declared/received byte counts, and upload rejection codes,
+  not request bodies or authorization headers. Use those fields to distinguish
+  a transfer rejection from an upstream provider failure.
 - The gateway exposes inference, not the OpenCode workspace.
 - The services are started by the script, not installed as boot services.
 - Public HTTPS model and chat routes are tested from the host; running UAI inside
