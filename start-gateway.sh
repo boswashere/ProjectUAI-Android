@@ -71,8 +71,8 @@ stop_all() {
 	done
 	pkill -f "cloudflared tunnel --url http://127.0.0.1:$PORT" 2>/dev/null || true
 	pkill -f "cloudflared tunnel run" 2>/dev/null || true
-	pkill -f "ProjectUAI-Android/gateway.py" 2>/dev/null || true
-	pkill -f "gateway.py" 2>/dev/null || true
+	# Full path so the pattern cannot match the shell running this script.
+	pkill -f "python3 $ROOT/gateway.py" 2>/dev/null || true
 	sleep 1
 }
 

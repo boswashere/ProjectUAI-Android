@@ -193,34 +193,77 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 headers['Authorization'] = 'Bearer ' + key
 
-            if tls:
-                upstream = http.client.HTTPSConnection(
-                    host, port, timeout=UPSTREAM_TIMEOUT, context=ssl.create_default_context())
-            else:
-                upstream = http.client.HTTPConnection(host, port, timeout=UPSTREAM_TIMEOUT)
-            upstream.request(self.command, upstream_path, body, headers)
-            response = upstream.getresponse()
-            data = response.read(MAX_REPLY + 1)
-            entry['status'] = response.status
+            # The host network drops TLS mid-handshake often enough that a single
+            # attempt turns into a user-visible failure. Retry a 5xx or a broken
+            # connection once; a completion has no side effect, so replay is safe.
+            status = 0
+            data = b''
+            for attempt in (1, 2):
+                if tls:
+                    upstream = http.client.HTTPSConnection(
+                        host, port, timeout=UPSTREAM_TIMEOUT, context=ssl.create_default_context())
+                else:
+                    upstream = http.client.HTTPConnection(host, port, timeout=UPSTREAM_TIMEOUT)
+                try:
+                    upstream.request(self.command, upstream_path, body, headers)
+                    response = upstream.getresponse()
+                    status = response.status
+                    data = response.read(MAX_REPLY + 1)
+                finally:
+                    upstream.close()
+                    upstream = None
+                if status < 500 and data:
+                    break
+                if attempt == 1:
+                    entry['retried'] = True
+                    time.sleep(0.6)
+
+            entry['status'] = status
             if len(data) > MAX_REPLY:
+                entry['status'] = 502
                 record(entry)
-                self.reply(502, b'{"error":"Response too large"}')
-            elif response.status >= 400:
+                self.reply(503, b'{"error":"Upstream response too large"}')
+            elif status >= 500:
+                # Cloudflare replaces an origin 502/504 with its own HTML page, and
+                # the client then reports a parse error instead of the real cause.
+                # Answer 503 with JSON so the message survives the tunnel.
+                detail = b''
+                try:
+                    decoded = json.loads(data)
+                    message = decoded.get('error') if isinstance(decoded, dict) else None
+                    if isinstance(message, dict):
+                        message = message.get('message')
+                    if message:
+                        detail = str(message).encode()[:400]
+                except (ValueError, UnicodeError):
+                    pass
+                entry['upstream_status'] = status
                 record(entry)
-                self.reply(response.status, b'{"error":"Provider request failed","status":'
-                           + str(response.status).encode() + b'}')
+                self.reply(503, json.dumps({
+                    'error': 'Provider failed upstream' + (': ' + detail.decode('utf-8', 'replace') if detail else ''),
+                    'upstream_status': status,
+                }).encode())
+            elif status >= 400:
+                record(entry)
+                # Keep the provider's own wording; a client shows it verbatim.
+                if data.startswith(b'{'):
+                    self.reply(status, data)
+                else:
+                    self.reply(status, b'{"error":"Provider request failed","status":'
+                               + str(status).encode() + b'}')
             else:
                 record(entry)
-                self.reply(response.status, data)
+                self.reply(status, data)
         except (ValueError, UnicodeError):
             entry['status'] = 400
             record(entry)
             self.reply(400, b'{"error":"Invalid JSON request"}')
         except (OSError, http.client.HTTPException) as exc:
-            entry['status'] = 504
+            # 503 rather than 504: Cloudflare masks 504 with its own HTML page.
+            entry['status'] = 503
             entry['error'] = type(exc).__name__
             record(entry)
-            self.reply(504, b'{"error":"Upstream connection failed or timed out; '
+            self.reply(503, b'{"error":"Upstream connection failed or timed out; '
                             b'request was not replayed"}')
         finally:
             if upstream:
