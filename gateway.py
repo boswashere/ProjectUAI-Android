@@ -9,13 +9,14 @@ Routes:
   /v1/models, /v1/chat/completions              local VibeCode pool (127.0.0.1:8787)
   /gonka/v1/models, /gonka/v1/chat/completions  GonkaRouter (GLM, DeepSeek, MiniMax)
   /zen/v1/models, /zen/v1/chat/completions      OpenCode Zen (only with a key on disk)
+  /fcc/v1, /rsiai/v1, /hinoki/v1               existing configured provider connections
 
 Diagnostics:
 
   GET /routes   prefixes that are live, so a loader only builds usable providers
   GET /health   upstream reachability plus the last few requests
 
-Replies are non-streaming because Cloudflare Quick Tunnels do not carry SSE.
+Replies intentionally use non-streaming JSON for this client integration.
 Every request is appended to a JSONL access log so a client-side failure can be
 traced without guessing.
 """
@@ -28,10 +29,14 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import BoundedSemaphore, Lock
+from gateway_sources import ProviderKey, configured_models
 
 TOKEN_FILE = Path('/root/.secrets/uai-gateway-token')
 GONKA_KEY_FILE = Path('/root/.secrets/gonkarouter-key')
 ZEN_KEY_FILE = Path('/root/.secrets/zen-key')
+FCC_KEY = ProviderKey('fcc')
+RSIAI_KEY = ProviderKey('rsiai')
+HINOKI_KEY = ProviderKey('hinoki')
 LOG_DIR = Path('/root/var/log')
 ACCESS_LOG = LOG_DIR / 'uai-gateway-access.jsonl'
 
@@ -47,8 +52,15 @@ CLIENT_TIMEOUT = 180
 ROUTES = (
     ('/v1/', '127.0.0.1', 8787, False, None, '/v1/', False),
     ('/gonka/v1/', 'api.gonkarouter.io', 443, True, GONKA_KEY_FILE, '/v1/', True),
-    ('/zen/v1/', 'opencode.ai', 443, True, ZEN_KEY_FILE, '/v1/', True),
+    ('/zen/v1/', 'opencode.ai', 443, True, ZEN_KEY_FILE, '/zen/v1/', True),
+    ('/fcc/v1/', '127.0.0.1', 8082, False, FCC_KEY, '/v1/', True),
+    ('/rsiai/v1/', 'www.rsiai.net', 443, True, RSIAI_KEY, '/v1/', True),
+    ('/hinoki/v1/', 'inference.hinoki.security', 443, True, HINOKI_KEY, '/v1/', True),
 )
+ROUTE_PROVIDERS = {
+    '/v1': 'vibecode', '/gonka/v1': 'gonka', '/zen/v1': 'opencode',
+    '/fcc/v1': 'fcc', '/rsiai/v1': 'rsiai', '/hinoki/v1': 'hinoki',
+}
 
 _recent = []
 _recent_lock = Lock()
@@ -76,9 +88,8 @@ def allowed(method, path):
     route = route_for(path)
     if not route:
         return False
-    rest = route[5]
-    return (method == 'GET' and rest.endswith('/models')) or (
-        method == 'POST' and rest.endswith('/chat/completions'))
+    rest = path[len(route[0]):]
+    return (method, rest) in {('GET', 'models'), ('POST', 'chat/completions')}
 
 
 def record(entry):
@@ -113,8 +124,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == '/routes':
-            self.reply(200, json.dumps(
-                {'routes': [route[0].rstrip('/') for route in active_routes()]}).encode())
+            routes = [route[0].rstrip('/') for route in active_routes()]
+            self.reply(200, json.dumps({
+                'routes': routes,
+                'providers': {route: {'models': configured_models(ROUTE_PROVIDERS[route])}
+                              for route in routes},
+            }).encode())
             return
         if self.path == '/health':
             self.reply(200, json.dumps(self.health()).encode())

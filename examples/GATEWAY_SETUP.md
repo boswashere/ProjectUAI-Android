@@ -1,6 +1,6 @@
 # Server-backed Android setup
 
-One authenticated gateway fronts every model pool the host has credit on.
+One authenticated gateway fronts the host's configured model providers.
 Provider keys never leave the host. Only model listing and chat completions are
 exposed. This gateway deliberately returns non-streaming JSON replies so the
 client does not depend on a long-lived streaming connection.
@@ -9,10 +9,17 @@ client does not depend on a long-lived streaming connection.
 | --- | --- | --- |
 | `/v1` | local VibeCode pool (`127.0.0.1:8787`) | GPT-6 Astra/Sol/Luna/Terra, Grok 4.x, Claude via Databricks and Kiro |
 | `/gonka/v1` | GonkaRouter | GLM 5.3 Flash, DeepSeek V4 Flash, MiniMax M2.7 |
+| `/fcc/v1` | existing local FCC gateway (`127.0.0.1:8082`) | configured Claude Fable / Sonnet wire IDs |
+| `/rsiai/v1` | RSI AI | Claude Opus 5.5 |
+| `/hinoki/v1` | Hinoki | Hinoki Offensive |
 | `/zen/v1` | OpenCode Zen | only enabled when `/root/.secrets/zen-key` holds a key |
 
-`GET /routes` lists the routes that are live, and the loader only creates
-providers for those, so a pool without a credential never appears in the picker.
+`GET /routes` lists enabled route prefixes in `routes`. Its optional `providers`
+map adds validated configured model IDs, for example
+`{"/fcc/v1":{"models":["claude-fable-5"]}}`. Existing clients can keep using
+the prefix array. The loader merges model IDs only for its known routes.
+Routes requiring a credential are omitted when that credential is missing;
+credential presence alone does not prove provider credit or availability.
 `GET /health` reports pool reachability and the last few requests, and every
 request is appended to `/root/var/log/uai-gateway-access.jsonl`.
 
@@ -116,6 +123,7 @@ node test/native_gateway_loader.cjs /path/to/ProjectUAI /path/to/luau
 These tests compile and run the real loader and pinned client. They cover mobile
 startup, PlayerGui fallback, executor HTTP aliases, offline/hanging discovery,
 reexecution, explicit startup failures and the send-button-to-reply path.
+They also exercise FCC, RSI AI and Hinoki through the real client/provider adapter.
 Roblox services and HTTP responses are test fixtures; this is not a substitute
 for checking rendering in a Roblox executor. Additional checks:
 
@@ -129,6 +137,16 @@ bash -n start-gateway.sh watch-gateway.sh
 
 ## Provider notes
 
+- **FCC, RSI AI and Hinoki** use the existing OpenCode provider configuration,
+  read-only. Inline, file and environment API-key settings remain on the host.
+  Hinoki can also use its active API-key credential from OpenCode's official
+  credential API, cached in server memory for 60 seconds. Inactive credentials
+  and OAuth credentials are not exported or used by this integration. The client
+  saves only its shared gateway token for these connections.
+- **Stored official OpenAI, Anthropic and Google credentials** are not advertised
+  as working routes: the current official-API checks failed (401 for OpenAI and
+  Anthropic; 400 for Google). Models offered through the enabled relay providers
+  remain separate from those rejected direct credentials.
 - **VibeCode pool.** Its upstream can intermittently fail TLS handshakes, reported
   as `SSL: UNEXPECTED_EOF_WHILE_READING`. Connection failures return a JSON error.
   New setups prefer `/gonka/v1`; existing selections are preserved. VibeCode

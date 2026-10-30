@@ -8,7 +8,12 @@ local function run(options)
 	local function body(url)
 		assert(not url:find('/dist/uai.lua', 1, true), 'secondary client download attempted')
 		if url:find('endpoint.txt', 1, true) then return 'https://fixture.example' end
-		if url:find('/routes', 1, true) then return '{"routes":["/v1","/gonka/v1"]}' end
+		if url:find('/routes', 1, true) then
+			return h.json.encode({
+				routes = options.extraProviders and {'/v1', '/gonka/v1', '/fcc/v1', '/rsiai/v1', '/hinoki/v1'} or {'/v1', '/gonka/v1'},
+				providers = {['/v1'] = {models = {'configured-fixture-model'}}},
+			})
+		end
 		error('Unexpected bootstrap URL: ' .. url)
 	end
 	h.game.HttpGet = function(_, url)
@@ -21,7 +26,7 @@ local function run(options)
 		if entry.url:find('/chat/completions', 1, true) then
 			chatRequests[#chatRequests + 1] = entry
 			return {StatusCode = 200, Body = h.json.encode({
-				id = 'fixture-completion', object = 'chat.completion', model = 'zai-org/GLM-5.3-Flash',
+				id = 'fixture-completion', object = 'chat.completion', model = h.json.decode(entry.body).model,
 				choices = {{index = 0, message = {role = 'assistant', content = 'Fixture reply rendered'}, finish_reason = 'stop'}},
 				usage = {prompt_tokens = 10, completion_tokens = 4, total_tokens = 14},
 			}), Headers = {['content-type'] = 'application/json'}}
@@ -94,6 +99,23 @@ local function run(options)
 			assert(#result.providers.list() == count, 'reexecution duplicated providers')
 			assert(result.providers.active().id == selected.id, 'reexecution discarded the saved model selection')
 		end
+		if options.extraProviders then
+			local found = {}
+			for _, record in ipairs(result.providers.list()) do
+				if record.label:find('Workspace Gateway', 1, true) then
+					found[record.label] = record
+					assert(record.apiKey == 'fixture-only-gateway-token', 'client received an upstream key')
+				end
+			end
+			assert(found['Workspace Gateway · FCC'] and found['Workspace Gateway · RSI AI'] and found['Workspace Gateway · Hinoki'],
+				'actual provider registry omitted an existing provider')
+			local configured = false
+			for _, model in ipairs(found['Workspace Gateway'].models) do
+				if model == 'configured-fixture-model' then configured = true end
+			end
+			assert(configured, 'actual registry omitted configured wire model metadata')
+			if options.selectedLabel then result.providers.setActive(found[options.selectedLabel].id) end
+		end
 		if options.send then
 			local composer = assert(result.app.chatPanel.composer, 'composer not mounted')
 			composer.field.set('Send one fixture reply')
@@ -102,10 +124,10 @@ local function run(options)
 			h.settle(10)
 			assert(#chatRequests == 1, 'send button did not produce exactly one provider request')
 			local entry = chatRequests[1]
-			assert(entry.url == 'https://fixture.example/gonka/v1/chat/completions', 'wrong provider URL')
+			assert(entry.url == 'https://fixture.example' .. (options.expectedRoute or '/gonka/v1') .. '/chat/completions', 'wrong provider URL')
 			assert(entry.headers.Authorization == 'Bearer fixture-only-gateway-token', 'gateway auth not attached')
 			local payload = h.json.decode(entry.body)
-			assert(payload.model == 'zai-org/GLM-5.3-Flash', 'wrong model in provider request')
+			assert(payload.model == (options.expectedModel or 'zai-org/GLM-5.3-Flash'), 'wrong model in provider request')
 			-- Sessions can request a stream; the gateway forces JSON upstream.
 			-- Verify that the real adapter renders that JSON response correctly.
 			assert(h.textOf(result.app.screen):find('Fixture reply rendered', 1, true), 'reply missing from actual chat UI')
@@ -129,6 +151,12 @@ local scenarios = {
 	{'hanging discovery returns UI and rejects late setup results', {hanging = true}},
 	{'no token still opens the actual interface', {noToken = true}},
 	{'actual client reexecution preserves visibility providers and selection', {rerun = true}},
+	{'actual FCC provider sends and renders a reply', {extraProviders = true, send = true,
+		selectedLabel = 'Workspace Gateway · FCC', expectedRoute = '/fcc/v1', expectedModel = 'claude-fable-5'}},
+	{'actual RSI AI provider sends and renders a reply', {extraProviders = true, send = true,
+		selectedLabel = 'Workspace Gateway · RSI AI', expectedRoute = '/rsiai/v1', expectedModel = 'claude-opus-5-5'}},
+	{'actual Hinoki provider sends and renders a reply', {extraProviders = true, send = true,
+		selectedLabel = 'Workspace Gateway · Hinoki', expectedRoute = '/hinoki/v1', expectedModel = 'hinoki-offensive'}},
 }
 local failed = 0
 for _, scenario in ipairs(scenarios) do

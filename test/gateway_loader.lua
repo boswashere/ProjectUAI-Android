@@ -72,7 +72,7 @@ local function run(options)
 				WaitForChild = function() return playerGui end,
 			} } end
 			if name == 'HttpService' then return { JSONDecode = function()
-				return { routes = { '/v1', '/gonka/v1' } }
+				return options.discovery or { routes = { '/v1', '/gonka/v1' } }
 			end } end
 		end,
 		HttpGet = function(_, url)
@@ -163,5 +163,36 @@ test('background setup preserves a selection made during discovery', function()
 	assert(ok, err)
 	assert(state.saves == 2, 'fixture did not finish background provider setup')
 	assert(state.client.providers.active() == manual, 'background setup overwrote the user selection')
+end)
+test('all five existing provider connections use only the shared gateway token', function()
+	local state = run({discovery = {routes = {'/v1', '/gonka/v1', '/fcc/v1', '/rsiai/v1', '/hinoki/v1'}}})
+	assert(state.saves == 5, 'additional configured providers were omitted')
+	local expected = {
+		['Workspace Gateway · FCC'] = 'claude-fable-5',
+		['Workspace Gateway · RSI AI'] = 'claude-opus-5-5',
+		['Workspace Gateway · Hinoki'] = 'hinoki-offensive',
+	}
+	for _, record in ipairs(state.records) do
+		assert(record.apiKey == 'fixture-token', 'upstream credential was substituted into client settings')
+		if expected[record.label] then
+			assert(record.model == expected[record.label], 'wrong wire model for ' .. record.label)
+			expected[record.label] = nil
+		end
+	end
+	assert(next(expected) == nil, 'missing provider record')
+end)
+test('configured wire models merge safely without replacing fallback models', function()
+	local state = run({discovery = {
+		routes = {'/v1', '/gonka/v1'},
+		providers = {['/v1'] = {models = {'configured-model', 'configured-model', {}, false, 'bad\nmodel', string.rep('x', 257)}}},
+	}})
+	local models = state.records[1].models
+	local count = 0
+	for _, model in ipairs(models) do
+		assert(type(model) == 'string' and not model:find('\n', 1, true) and #model <= 256, 'invalid model metadata accepted')
+		if model == 'configured-model' then count = count + 1 end
+	end
+	assert(models[1] == 'gpt-6-astra', 'fallback models were replaced')
+	assert(count == 1, 'configured models missing or duplicated')
 end)
 os.exit(failed == 0 and 0 or 1)

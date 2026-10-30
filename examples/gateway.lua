@@ -73782,7 +73782,37 @@ local catalog = {
 		label = "Workspace Gateway · OpenCode", default = "glm-5.3-flash-free",
 		models = { "glm-5.3-flash-free", "deepseek-v4.1-flash-free", "big-pickle", "beam-free", "flint-40b-free", "mimo-v2.6-flash-free", "nemotron-3.5-super-vl-free", "nemotron-3.5-lightning-free" },
 	},
+	["/fcc/v1"] = {
+		label = "Workspace Gateway · FCC", default = "claude-fable-5",
+		models = { "claude-fable-5", "claude-sonnet-4-20250514" },
+	},
+	["/rsiai/v1"] = {
+		label = "Workspace Gateway · RSI AI", default = "claude-opus-5-5",
+		models = { "claude-opus-5-5" },
+	},
+	["/hinoki/v1"] = {
+		label = "Workspace Gateway · Hinoki", default = "hinoki-offensive",
+		models = { "hinoki-offensive" },
+	},
 }
+
+local function modelList(fallback, metadata)
+	local result, seen = {}, {}
+	local function add(model)
+		if #result < 512 and type(model) == "string" and #model > 0 and #model <= 256
+			and model:match("^[%w%._/%+:%-]+$") and not seen[model] then
+			seen[model], result[#result + 1] = true, model
+		end
+	end
+	for _, model in ipairs(fallback) do add(model) end
+	if type(metadata) == "table" and type(metadata.models) == "table" then
+		for index, model in ipairs(metadata.models) do
+			if index > 512 then break end
+			add(model)
+		end
+	end
+	return result
+end
 
 if type(token) ~= "string" or token == "" then
 	for _, saved in ipairs(uai.providers.list()) do
@@ -73855,7 +73885,8 @@ task.defer(function()
 				record.label, record.baseUrl, record.apiKey = entry.label, endpoint .. route, token
 				record.api, record.authStyle, record.stream = "openai", "bearer", false
 				if type(record.model) ~= "string" or record.model == "" then record.model = entry.default end
-				record.models = entry.models
+				local metadata = type(decoded.providers) == "table" and decoded.providers[route] or nil
+				record.models = modelList(entry.models, metadata)
 				local savedOk, saved = uai.providers.save(record)
 				if not savedOk then finish("Gateway settings were rejected; review Providers"); return end
 				if saved.enabled ~= false then built[route] = saved end
@@ -73863,6 +73894,7 @@ task.defer(function()
 		end
 		if not current() then return end
 		local preferred = built["/gonka/v1"] or built["/v1"] or built["/zen/v1"]
+			or built["/fcc/v1"] or built["/rsiai/v1"] or built["/hinoki/v1"]
 		local active = uai.providers.active()
 		-- Do not steal a selection made during HTTP, or replace a saved custom choice.
 		if preferred and selectDefault and (active and active.id) == initialId
