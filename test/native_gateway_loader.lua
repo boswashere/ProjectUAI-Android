@@ -6,17 +6,13 @@ local function run(options)
 	h.services.UserInputService.KeyboardEnabled = false
 	local chatRequests = {}
 	local function body(url)
-		if url:find('/dist/uai.lua', 1, true) then
-			if options.badDownload then return '<html>download failed</html>' end
-			if options.badSyntax then return 'local FOLDER = "UAI"\n' .. string.rep(' ', 100001) .. 'local =' end
-			return sources.bundle
-		end
+		assert(not url:find('/dist/uai.lua', 1, true), 'secondary client download attempted')
 		if url:find('endpoint.txt', 1, true) then return 'https://fixture.example' end
 		if url:find('/routes', 1, true) then return '{"routes":["/v1","/gonka/v1"]}' end
 		error('Unexpected bootstrap URL: ' .. url)
 	end
 	h.game.HttpGet = function(_, url)
-		if options.httpGetDenied then error('HttpGet unavailable') end
+		if options.httpGetDenied or options.offline then error('HttpGet unavailable') end
 		return body(url)
 	end
 	h.http.handler = function(entry)
@@ -57,6 +53,9 @@ local function run(options)
 		end
 	end
 	local wrapper = assert(h.sandbox.loadstring(sources.loader, 'gateway'))
+	if options.noDynamicCompile then
+		h.sandbox.loadstring = function() error('Secondary compilation forbidden') end
+	end
 	local ok, result
 	h.sched.spawn(function() ok, result = pcall(wrapper, 'fixture-only-gateway-token') end)
 	h.settle(8)
@@ -70,7 +69,9 @@ local function run(options)
 		if options.playerGui then
 			assert(result.app.screen.Parent == h.localPlayer:FindFirstChild('PlayerGui'), 'PlayerGui fallback not used')
 		end
-		assert(result.providers.active().model == 'zai-org/GLM-5.3-Flash', 'working route not configured')
+		if not options.offline then
+			assert(result.providers.active().model == 'zai-org/GLM-5.3-Flash', 'working route not configured')
+		end
 		if options.send then
 			local composer = assert(result.app.chatPanel.composer, 'composer not mounted')
 			composer.field.set('Send one fixture reply')
@@ -100,10 +101,9 @@ local scenarios = {
 	{'actual client with http.request only', {httpGetDenied = true, alias = 'http.request'}},
 	{'actual client with fluxus.request only', {httpGetDenied = true, alias = 'fluxus.request'}},
 	{'mobile send button through adapter to rendered reply', {send = true}},
-	{'failed download is not swallowed', {badDownload = true, expectError = 'download failed'}},
-	{'compile failure is not swallowed', {badSyntax = true, expectError = 'compile failed'}},
+	{'embedded client needs no secondary compilation', {noDynamicCompile = true}},
 	{'client startup failure is not swallowed', {noGui = true, expectError = 'start returned no client'}},
-	{'offline bootstrap is not swallowed', {httpGetDenied = true, offline = true, expectError = 'download failed'}},
+	{'offline bootstrap still returns the visible client', {offline = true}},
 }
 local failed = 0
 for _, scenario in ipairs(scenarios) do
