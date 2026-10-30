@@ -1,14 +1,37 @@
 -- Pass the private gateway token once; subsequent runs reuse the saved providers.
 --
--- One URL and one token front every pool the host has credit on. The loader asks
--- the gateway which pools are live, so a pool without a credential on the host
--- (OpenCode Zen, for example) simply does not appear.
---
--- start-gateway.sh on the host republishes this file whenever the quick tunnel
--- changes its hostname.
+-- One URL and one token front every pool the host has credit on. The loader reads
+-- the live tunnel address from endpoint.txt on this repository, so a rotated
+-- Cloudflare hostname never needs this file rewritten, and asks the gateway which
+-- pools are live so a pool without a credential on the host simply does not appear.
 local token = ...
-local endpoint = "https://gordon-seed-guests-rev.trycloudflare.com"
-local start = assert(loadstring(game:HttpGet("https://raw.githubusercontent.com/Project-Ptolemy/ProjectUAI/main/dist/uai.lua")))
+local REPO = "https://raw.githubusercontent.com/boswashere/ProjectUAI-Android/main/"
+local FALLBACK_ENDPOINT = "https://gordon-seed-guests-rev.trycloudflare.com"
+
+local function httpGet(url)
+	local ok, body = pcall(function() return game:HttpGet(url) end)
+	if ok and type(body) == "string" and body ~= "" then return body end
+	return nil
+end
+
+local function decode(text)
+	local ok, value = pcall(function()
+		return game:GetService("HttpService"):JSONDecode(text)
+	end)
+	if ok and type(value) == "table" then return value end
+	return nil
+end
+
+-- endpoint.txt is one line: the current public base URL.
+local endpoint = FALLBACK_ENDPOINT
+do
+	local body = httpGet(REPO .. "endpoint.txt")
+	local found = type(body) == "string" and body:match("https://[%w%.%-]+") or nil
+	if found then endpoint = found end
+end
+
+local start = assert(loadstring(game:HttpGet(
+	"https://raw.githubusercontent.com/Project-Ptolemy/ProjectUAI/main/dist/uai.lua")))
 local uai = start({ reuse = true })
 assert(uai and uai.alive, "UAI could not start")
 
@@ -46,15 +69,14 @@ local catalog = {
 	},
 }
 
+-- Only build providers the host can actually serve right now.
 local routes = { "/v1" }
-local ok, body = pcall(function() return game:HttpGet(endpoint .. "/routes") end)
-if ok and type(body) == "string" and body ~= "" then
-	local decoded
-	local decodedOk, value = pcall(function()
-		return game:GetService("HttpService"):JSONDecode(body)
-	end)
-	if decodedOk then decoded = value end
-	if type(decoded) == "table" and type(decoded.routes) == "table" then routes = decoded.routes end
+do
+	local body = httpGet(endpoint .. "/routes")
+	local decoded = body and decode(body) or nil
+	if decoded and type(decoded.routes) == "table" and #decoded.routes > 0 then
+		routes = decoded.routes
+	end
 end
 
 local function configure(route)
@@ -72,6 +94,8 @@ local function configure(route)
 	record.baseUrl = baseUrl
 	record.api = "openai"
 	record.authStyle = "bearer"
+	-- The gateway answers with a single JSON body, not SSE.
+	record.stream = false
 	if type(record.model) ~= "string" or record.model == "" then record.model = entry.default end
 	record.models = entry.models
 	local savedOk, saved = uai.providers.save(record)
