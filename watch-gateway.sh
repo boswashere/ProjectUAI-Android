@@ -93,8 +93,13 @@ publish() {
 
 restart_tunnel() {
 	log "restarting tunnel"
-	pkill -f "cloudflared tunnel --url http://127.0.0.1:$PORT" 2>/dev/null || true
+	# Anchor the executable: the supervisor's bash -c argument also contains
+	# this command, and an unanchored match kills the recovery loop itself.
+	pkill -f "^/root/.local/bin/cloudflared tunnel --url http://127[.]0[.]0[.]1:$PORT( |$)" 2>/dev/null || true
 	sleep 6
+	# The supervisor may already have exited. A live gateway port alone is not
+	# evidence that anything is still serving the public hostname.
+	"$ROOT/start-gateway.sh" >>"$WATCH_LOG" 2>&1 || true
 }
 
 last_restart=0

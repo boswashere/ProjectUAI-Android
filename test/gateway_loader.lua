@@ -2,6 +2,9 @@
 -- Regression: optional endpoint lookup must never gate opening the interface.
 local function run(options)
 	local state = { labels = {}, records = {}, events = {} }
+	if options.reuseSavedKey then
+		state.records[1] = { id = '1', label = 'Workspace Gateway', apiKey = 'saved-fixture-token', model = 'gpt-6-astra' }
+	end
 	local playerGui = {}
 	local env = setmetatable({}, { __index = _G })
 	env.warn = function() end
@@ -61,7 +64,9 @@ local function run(options)
 		end,
 	}
 	local loader = assert(loadfile('examples/gateway.lua', 't', env))
-	local worker = coroutine.create(function() loader('fixture-token') end)
+	local invocationToken
+	if not options.reuseSavedKey then invocationToken = 'fixture-token' end
+	local worker = coroutine.create(function() loader(invocationToken) end)
 	local ok, err = coroutine.resume(worker)
 	assert(ok, err)
 	return state
@@ -90,5 +95,11 @@ test('requests visible UI without toggling an existing client closed', function(
 	local state = run({})
 	assert(state.context and state.context.ui == true and state.context.reuse == true,
 		'bootstrap inherits hidden UI context or toggles a reused client')
+end)
+test('saved gateway token also configures the working GLM route', function()
+	local state = run({ reuseSavedKey = true })
+	assert(state.active and state.active.model == 'zai-org/GLM-5.3-Flash',
+		'saved-token rerun left only the failing VibeCode route configured')
+	assert(state.active.apiKey == 'saved-fixture-token', 'GLM did not reuse the saved gateway token')
 end)
 os.exit(failed == 0 and 0 or 1)

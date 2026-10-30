@@ -159,6 +159,22 @@ local catalog = {
 	},
 }
 
+-- All workspace routes use the same gateway credential. An existing install
+-- may only have the original VibeCode record; reuse its unlocked key when
+-- adding GLM instead of silently skipping that provider on tokenless reruns.
+if type(token) ~= "string" or token == "" then
+	for _, saved in ipairs(uai.providers.list()) do
+		local workspaceRecord = false
+		for _, entry in pairs(catalog) do
+			if saved.label == entry.label then workspaceRecord = true; break end
+		end
+		if workspaceRecord and type(saved.apiKey) == "string" and saved.apiKey ~= "" then
+			token = saved.apiKey
+			break
+		end
+	end
+end
+
 local routes = { "/v1" }
 do
 	local body = httpGet(endpoint .. "/routes")
