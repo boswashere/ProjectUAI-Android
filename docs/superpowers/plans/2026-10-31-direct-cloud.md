@@ -42,6 +42,24 @@ mode uses their real NVIDIA IDs instead of needing the local alias translator.
   options, missing credentials, and offline visible startup. Observe failures.
 - [x] Implement the additive direct-mode branch, regenerate the artifact, and
   pass both direct and existing gateway suites. Review changes inline (single agent).
-- [ ] Publish verified public code, verify the exact downloaded artifact, and
+- [x] Publish verified public code, verify the exact downloaded artifact, and
   generate/deliver the private ready-to-run launcher using existing keys. Record
   direct cloud tests and distinguish them from physical executor verification.
+
+## Verification and handoff
+
+- Published implementation: `da701a1be9a582058a189893297ec9f02de8caab`.
+- Both the plain `main/examples/gateway.lua` URL and immutable revision returned
+  HTTP 200 and exactly matched the tested 3,820,903-byte artifact.
+- Artifact SHA-256:
+  `8b8318e3c025efddf7eb47b2e2ca7c136599b978d3af56b09d433e7d4a69e1dd`.
+- Direct native integration: 12 scenarios passed; existing gateway native
+  integration: 24 passed; Lua bootstrap: 13 passed; Python: 23 passed; builder:
+  3 passed. Android setup, shell syntax, and generated-artifact checks passed.
+- All five cloud providers returned actual direct chat replies with existing
+  credentials. Native client tests use external Roblox/HTTP fixtures; physical
+  executor rendering was not reverified for this change.
+- The filled private launcher is `/root/.secrets/uai-direct-launcher.lua`, mode
+  `0600`, and passed Lua syntax checking. It includes the existing six usable
+  VibeCode pool entries and one existing key for each of the other four providers.
+  No credentials are included in public source or this record.
