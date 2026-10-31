@@ -28,7 +28,7 @@ assert.equal(crypto.createHash('sha256').update(sources.bundle).digest('hex'),
   'ed5176f3301b7412b1627040ef85357684c5525b995672f66389a1787304ef80',
   'Tests must execute the exact pinned 3.7.1 bundle, not a different client');
 sources.loader = fs.readFileSync(path.join(__dirname, '../examples/gateway.lua'), 'utf8');
-sources.scenario = fs.readFileSync(path.join(__dirname, 'native_gateway_loader.lua'), 'utf8');
+sources.scenario = fs.readFileSync(process.argv[4] || path.join(__dirname, 'native_gateway_loader.lua'), 'utf8');
 
 const program = `
 local sources = {${Object.entries(sources).map(([key, text]) => `[${JSON.stringify(key)}] = ${literal(text)}`).join(',\n')}}

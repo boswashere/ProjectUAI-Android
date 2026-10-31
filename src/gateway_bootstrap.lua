@@ -148,25 +148,6 @@ local function modelList(fallback, metadata)
 	return result
 end
 
-if type(token) ~= "string" or token == "" then
-	for _, saved in ipairs(uai.providers.list()) do
-		for _, entry in pairs(catalog) do
-			if saved.label == entry.label and type(saved.apiKey) == "string" and saved.apiKey ~= "" then
-				token = saved.apiKey
-				break
-			end
-		end
-		if type(token) == "string" and token ~= "" then break end
-	end
-end
-
-if type(token) ~= "string" or token == "" then
-	local opened, reason = uai.show("providers")
-	if not opened then fail("Cannot open provider setup: " .. tostring(reason)) end
-	finish("Interface open; add your private gateway token in Providers, then rerun")
-	return uai
-end
-
 local function origin(body)
 	if type(body) ~= "string" or #body > 512 then return nil end
 	local host = body:match("^%s*https://([A-Za-z0-9%.%-]+)/?%s*$")
@@ -233,6 +214,114 @@ local function refreshCatalogs(records)
 			end
 		end)
 	end
+end
+
+-- Private direct options use cloud keys, never the workspace gateway token.
+-- Fixed origins prevent a supplied option from redirecting those credentials.
+if type(token) == "table" then
+	if token.mode ~= "direct" then fail("Unknown setup mode") end
+	-- The embedded client can discover an optional local companion at boot.
+	-- Direct mode owns inference here, so stop further discovery and relay routing.
+	uai.config.set("relay.mode", "off")
+	uai.config.set("bridge.autoDiscover", false)
+	uai.config.set("bridge.enabled", false)
+	uai.bridge.stop()
+	local supplied = token.providers or {}
+	if type(supplied) ~= "table" then fail("Direct providers must be a table") end
+	local util = uai.env.require("runtime/util")
+	local keys = uai.env.require("runtime/provider_keys")
+	local direct = {
+		{ id = "vibecode", label = "VibeCode (Direct)", base = "https://api.vibecode-claude.online/v1", seed = catalog["/v1"] },
+		{ id = "gonka", label = "GonkaRouter (Direct)", base = "https://api.gonkarouter.io/v1", seed = catalog["/gonka/v1"] },
+		{ id = "rsiai", label = "RSI AI (Direct)", base = "https://www.rsiai.net/v1", seed = catalog["/rsiai/v1"] },
+		{ id = "hinoki", label = "Hinoki (Direct)", base = "https://inference.hinoki.security/v1", seed = catalog["/hinoki/v1"] },
+		{ id = "nvidia", label = "NVIDIA NIM (Direct)", base = "https://integrate.api.nvidia.com/v1", seed = {
+			default = "nvidia/nemotron-3.5-lightning-30b-a3b",
+			models = { "nvidia/nemotron-3.5-lightning-30b-a3b", "nvidia/nemotron-3-ultra-550b-a55b" },
+		} },
+	}
+	local prepared = {}
+	for _, spec in ipairs(direct) do
+		local entry, incoming = supplied[spec.id], {}
+		if entry ~= nil then
+			if type(entry) ~= "table" or type(entry.keys) ~= "table" then fail("Direct provider keys must be an array") end
+			local count = #entry.keys
+			if count > 64 then fail("Too many keys for a direct provider") end
+			for index, value in pairs(entry.keys) do
+				if type(index) ~= "number" or index % 1 ~= 0 or index < 1 or index > count
+					or type(value) ~= "string" or #value == 0 or #value > 16384
+					or value:find("[%s%c,]") then fail("Direct provider keys must be nonempty single-line strings") end
+			end
+			for _, value in ipairs(entry.keys) do incoming[#incoming + 1] = value end
+		end
+		local record
+		for _, saved in ipairs(uai.providers.list()) do
+			if saved.label == spec.label and saved.baseUrl == spec.base then record = util.deepCopy(saved); break end
+		end
+		record = record or uai.providers.blank("custom")
+		if #incoming > 0 then
+			local added = keys.add(record, table.concat(incoming, "\n"))
+			if not added then fail("Direct key pool could not be updated; review Providers") end
+		end
+		if #keys.keys(record) > 0 then
+			record.label, record.baseUrl = spec.label, spec.base
+			record.api, record.authStyle, record.stream = "openai", "bearer", false
+			record.params = type(record.params) == "table" and util.deepCopy(record.params) or {}
+			record.params.stream = false
+			if type(record.model) ~= "string" or record.model == "" then record.model = spec.seed.default end
+			record.models = modelList(record.models or {}, { models = modelList(spec.seed.models, entry) })
+			if not uai.providers.validate(record) then fail("Direct provider settings were rejected; review Providers") end
+			prepared[#prepared + 1] = record
+		end
+	end
+	local ready, readyIds = {}, {}
+	for _, record in ipairs(prepared) do
+		local savedOk, saved = uai.providers.save(record)
+		if not savedOk then fail("Direct provider settings could not be saved; review Providers") end
+		if saved.enabled ~= false and #keys.requestKeys(saved) > 0 then
+			ready[#ready + 1], readyIds[saved.id] = saved, true
+		end
+	end
+	if #ready == 0 then
+		local opened, reason = uai.show("providers")
+		if not opened then fail("Cannot open provider setup: " .. tostring(reason)) end
+		finish("Interface open; add or resume a cloud API key in Providers")
+		return uai
+	end
+	-- Keep the old settings for recovery, but remove the local gateway from fallback.
+	local legacyLabels = {}
+	for _, entry in pairs(catalog) do legacyLabels[entry.label] = true end
+	for _, saved in ipairs(uai.providers.list()) do
+		if legacyLabels[saved.label] and saved.enabled ~= false then
+			local disabled = util.deepCopy(saved)
+			disabled.enabled = false
+			if not uai.providers.save(disabled) then fail("Could not disable the old gateway; review Providers") end
+		end
+	end
+	local active = uai.providers.active()
+	if not active or not readyIds[active.id] then uai.providers.setActive(ready[1].id) end
+	finish("Direct cloud providers ready; Termux and the tunnel are not needed")
+	refreshCatalogs(ready)
+	return uai
+end
+
+if type(token) ~= "string" or token == "" then
+	for _, saved in ipairs(uai.providers.list()) do
+		for _, entry in pairs(catalog) do
+			if saved.label == entry.label and type(saved.apiKey) == "string" and saved.apiKey ~= "" then
+				token = saved.apiKey
+				break
+			end
+		end
+		if type(token) == "string" and token ~= "" then break end
+	end
+end
+
+if type(token) ~= "string" or token == "" then
+	local opened, reason = uai.show("providers")
+	if not opened then fail("Cannot open provider setup: " .. tostring(reason)) end
+	finish("Interface open; add your private gateway token in Providers, then rerun")
+	return uai
 end
 
 local initial = uai.providers.active()
